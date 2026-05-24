@@ -325,6 +325,9 @@ func _spawn_batch() -> void:
 		tile.chunk_pos    = cp
 		tile.grid_x       = x
 		tile.grid_z       = z
+		
+		if tile.has_method("_setup_area3d"):
+			tile._setup_area3d()
 
 		_sync_tile_visual_from_data(tile, is_mine, number, revealed, flagged, should_animate)
 
@@ -462,23 +465,17 @@ func _find_revealed_border_tiles(chunk_pos: Vector2i) -> Array:
 
 	return seeds
 
-# OPTIMIZED: Flood reveal from point using head pointer instead of pop_front()
 func _flood_reveal_from_point(start_cp: Vector2i, start_lx: int, start_lz: int) -> void:
-	# Use an array as a queue with a head pointer for O(1) dequeue
-	var queue: Array = []
-	var head: int = 0
-	queue.append([start_cp, start_lx, start_lz])
-	
+	var queue   : Array      = [[start_cp, start_lx, start_lz]]
 	var visited : Dictionary = {}
 
-	while head < queue.size():
-		var entry = queue[head]
-		head += 1
-		
+	while not queue.is_empty():
+		var entry = queue.pop_front()
 		var cp : Vector2i = entry[0]
 		var lx : int      = entry[1]
 		var lz : int      = entry[2]
 
+		# Use packed integer key instead of string formatting
 		var key : int = _pack_key(cp, lx, lz)
 		if visited.has(key):
 			continue
@@ -513,25 +510,20 @@ func _flood_reveal_from_point(start_cp: Vector2i, start_lx: int, start_lz: int) 
 				var n_cp : Vector2i = cp
 
 				if nx < 0:
-					n_cp.x -= 1
-					nx += CHUNK_SIZE
+					n_cp.x -= 1; nx += CHUNK_SIZE
 				elif nx >= CHUNK_SIZE:
-					n_cp.x += 1
-					nx -= CHUNK_SIZE
+					n_cp.x += 1; nx -= CHUNK_SIZE
 
 				if nz < 0:
-					n_cp.y -= 1
-					nz += CHUNK_SIZE
+					n_cp.y -= 1; nz += CHUNK_SIZE
 				elif nz >= CHUNK_SIZE:
-					n_cp.y += 1
-					nz -= CHUNK_SIZE
+					n_cp.y += 1; nz -= CHUNK_SIZE
 
-				# Check if the neighbor chunk exists or is pending flood fill
 				if chunks.has(n_cp) or n_cp in _chunks_pending_flood:
 					queue.append([n_cp, nx, nz])
 
 # ─────────────────────────────────────────────────────────────
-# FLOOD REVEAL SYSTEM (INITIAL) - Optimized with head pointer
+# FLOOD REVEAL SYSTEM (INITIAL)
 # ─────────────────────────────────────────────────────────────
 
 func _execute_flood_reveal_with_retry() -> void:
@@ -637,18 +629,14 @@ func _recount_numbers_around(cp: Vector2i, lx: int, lz: int) -> void:
 			var n_cp := cp
 
 			if nx < 0:
-				n_cp.x -= 1
-				nx += CHUNK_SIZE
+				n_cp.x -= 1; nx += CHUNK_SIZE
 			elif nx >= CHUNK_SIZE:
-				n_cp.x += 1
-				nx -= CHUNK_SIZE
+				n_cp.x += 1; nx -= CHUNK_SIZE
 
 			if nz < 0:
-				n_cp.y -= 1
-				nz += CHUNK_SIZE
+				n_cp.y -= 1; nz += CHUNK_SIZE
 			elif nz >= CHUNK_SIZE:
-				n_cp.y += 1
-				nz -= CHUNK_SIZE
+				n_cp.y += 1; nz -= CHUNK_SIZE
 
 			if not chunks.has(n_cp):
 				continue
@@ -668,18 +656,14 @@ func _recount_numbers_around(cp: Vector2i, lx: int, lz: int) -> void:
 					var w_cp := n_cp
 
 					if wx < 0:
-						w_cp.x -= 1
-						wx += CHUNK_SIZE
+						w_cp.x -= 1; wx += CHUNK_SIZE
 					elif wx >= CHUNK_SIZE:
-						w_cp.x += 1
-						wx -= CHUNK_SIZE
+						w_cp.x += 1; wx -= CHUNK_SIZE
 
 					if wz < 0:
-						w_cp.y -= 1
-						wz += CHUNK_SIZE
+						w_cp.y -= 1; wz += CHUNK_SIZE
 					elif wz >= CHUNK_SIZE:
-						w_cp.y += 1
-						wz -= CHUNK_SIZE
+						w_cp.y += 1; wz -= CHUNK_SIZE
 
 					if chunks.has(w_cp):
 						if chunks[w_cp].tile_mine[wx * Chunk.SIZE + wz] == 1:
@@ -687,21 +671,13 @@ func _recount_numbers_around(cp: Vector2i, lx: int, lz: int) -> void:
 
 			n_chunk.tile_number[n_idx] = count
 
-# OPTIMIZED: Main flood reveal using head pointer instead of pop_front()
 func _flood_reveal(start_cp: Vector2i, start_lx: int, start_lz: int) -> void:
 	_in_flood_reveal = true
-	
-	# Use an array as a queue with a head pointer for O(1) dequeue
-	var queue: Array = []
-	var head: int = 0
-	queue.append([start_cp, start_lx, start_lz])
-	
+	var queue   : Array      = [[start_cp, start_lx, start_lz]]
 	var visited : Dictionary = {}
 
-	while head < queue.size():
-		var entry = queue[head]
-		head += 1
-		
+	while not queue.is_empty():
+		var entry = queue.pop_front()
 		var cp : Vector2i = entry[0]
 		var lx : int      = entry[1]
 		var lz : int      = entry[2]
@@ -740,18 +716,14 @@ func _flood_reveal(start_cp: Vector2i, start_lx: int, start_lz: int) -> void:
 				var n_cp : Vector2i = cp
 
 				if nx < 0:
-					n_cp.x -= 1
-					nx += CHUNK_SIZE
+					n_cp.x -= 1; nx += CHUNK_SIZE
 				elif nx >= CHUNK_SIZE:
-					n_cp.x += 1
-					nx -= CHUNK_SIZE
+					n_cp.x += 1; nx -= CHUNK_SIZE
 
 				if nz < 0:
-					n_cp.y -= 1
-					nz += CHUNK_SIZE
+					n_cp.y -= 1; nz += CHUNK_SIZE
 				elif nz >= CHUNK_SIZE:
-					n_cp.y += 1
-					nz -= CHUNK_SIZE
+					n_cp.y += 1; nz -= CHUNK_SIZE
 
 				queue.append([n_cp, nx, nz])
 
