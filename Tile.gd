@@ -35,6 +35,8 @@ const EMISSION_PULSE : float = 0.3
 
 @onready var mesh         : MeshInstance3D = $MeshInstance3D
 @onready var mesh_outline : MeshInstance3D = $Outline
+@onready var static_body  : StaticBody3D = $StaticBody3D
+@onready var collision_shape : CollisionShape3D = $StaticBody3D/CollisionShape3D
 
 # ─────────────────────────────────────────────
 # SHADER
@@ -363,8 +365,18 @@ func _sink() -> void:
 	
 	_sink_tween.set_ease(Tween.EASE_IN)
 	_sink_tween.set_trans(Tween.TRANS_CUBIC)
+	
+	# FIX #1: Move BOTH mesh AND collision shape
 	_sink_tween.tween_property(mesh,         "position:y", target_y,                                SINK_DURATION)
 	_sink_tween.parallel().tween_property(mesh_outline, "position:y", target_y + _outline_offset_y, SINK_DURATION)
+	_sink_tween.parallel().tween_property(collision_shape, "position:y", target_y,                  SINK_DURATION)
+	
+	# FIX #2: Notify player to sink with the tile
+	_sink_tween.tween_callback(func():
+		var player = get_tree().get_first_node_in_group("player")
+		if player and player.has_method("sink_with_tile"):
+			player.sink_with_tile(_surface_y, target_y, SINK_DURATION)
+	)
 
 func _set_sunk_position_immediate() -> void:
 	if not mesh or not mesh_outline:
@@ -373,6 +385,7 @@ func _set_sunk_position_immediate() -> void:
 	var target_y : float = _surface_y - SINK_DEPTH
 	mesh.position.y         = target_y
 	mesh_outline.position.y = target_y + _outline_offset_y
+	collision_shape.position.y = target_y  # FIX #1: Also set collision immediately
 
 # ─────────────────────────────────────────────
 # LABELS
@@ -435,4 +448,7 @@ func _clear_label() -> void:
 	var existing = get_node_or_null("TileLabel")
 	if existing and is_instance_valid(existing):
 		existing.queue_free()
-		
+
+# FIX #1: Helper to get tile top surface height (for player raycast checks)
+func get_tile_top_height() -> float:
+	return _surface_y
