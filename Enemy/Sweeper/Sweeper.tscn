@@ -1,0 +1,16 @@
+[gd_scene format=3 uid="uid://vr0lk472hpj6"]
+
+[ext_resource type="PackedScene" uid="uid://c5mn41xigea5f" path="res://Enemy/Sweeper/maxdamage_scab-low-poly.gltf" id="1_ki6bf"]
+
+[sub_resource type="SphereShape3D" id="SphereShape3D_ki6bf"]
+radius = 0.31138417
+
+[node name="Node3D" type="Node3D" unique_id=767281884]
+transform = Transform3D(3, 0, 0, 0, 3, 0, 0, 0, 3, 0, -0.3493042, 0)
+
+[node name="maxdamage_scab-low-poly" parent="." unique_id=127903445 instance=ExtResource("1_ki6bf")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.7566922, 0)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="maxdamage_scab-low-poly" unique_id=341378917]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.2239283, 0)
+shape = SubResource("SphereShape3D_ki6bf")

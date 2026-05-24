@@ -1,0 +1,77 @@
+[gd_scene format=3 uid="uid://cri4rtq2dhqgc"]
+
+[ext_resource type="Script" uid="uid://dfxxttkxw8n3r" path="res://scenes/scripts/ChunkManager.gd" id="1_0bbpv"]
+[ext_resource type="Script" uid="uid://bwr6wp1s0c70j" path="res://scenes/Main.gd" id="1_vcsgt"]
+[ext_resource type="PackedScene" uid="uid://c8abhq2u5fcat" path="res://scenes/Tile.tscn" id="2_uu6xs"]
+[ext_resource type="PackedScene" uid="uid://c65haismtwemy" path="res://Player/Player.tscn" id="4_vcsgt"]
+[ext_resource type="Script" uid="uid://cpvhkidr2mlot" path="res://scenes/Freecam.gd" id="5_c01mt"]
+[ext_resource type="PackedScene" uid="uid://wk8csdo2hatv" path="res://scenes/tile_debug_visualizer.tscn" id="5_q8u5g"]
+[ext_resource type="PackedScene" uid="uid://ddvphcjg650ve" path="res://scenes/HUD.tscn" id="6_c01mt"]
+[ext_resource type="Script" uid="uid://c7eeqyfmeajhc" path="res://scenes/EntityManager.gd" id="10_lhr70"]
+
+[sub_resource type="PlaneMesh" id="PlaneMesh_r0du0"]
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_r0du0"]
+
+[sub_resource type="Environment" id="Environment_uu6xs"]
+background_mode = 1
+tonemap_mode = 3
+glow_enabled = true
+glow_intensity = 0.8
+glow_bloom = 0.2
+glow_hdr_threshold = 0.8
+fog_light_color = Color(0.42403823, 0.45768136, 0.5081496, 1)
+fog_density = 0.03
+volumetric_fog_density = 0.6283
+volumetric_fog_emission = Color(0.87211996, 0.8744631, 0.86835593, 1)
+adjustment_contrast = 0.995
+
+[sub_resource type="BoxMesh" id="BoxMesh_vcsgt"]
+
+[node name="Main" type="Node3D" unique_id=1586957892]
+script = ExtResource("1_vcsgt")
+
+[node name="GridManager" type="Node" parent="." unique_id=451116529]
+script = ExtResource("1_0bbpv")
+tile_scene = ExtResource("2_uu6xs")
+
+[node name="Player" parent="." unique_id=1452008047 instance=ExtResource("4_vcsgt")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 11.857939, 15, 12.094401)
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="." unique_id=2040313124]
+transform = Transform3D(20, 0, 0, 0, 1, 0, 0, 0, 20, 0, -3.6182837, 0)
+mesh = SubResource("PlaneMesh_r0du0")
+
+[node name="StaticBody3D" type="StaticBody3D" parent="MeshInstance3D" unique_id=2133447045]
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="MeshInstance3D/StaticBody3D" unique_id=96214144]
+transform = Transform3D(1.9999999, 0, 0, 0, 0.05, 0, 0, 0, 1.9999999, 0, 0, 0)
+shape = SubResource("BoxShape3D_r0du0")
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="." unique_id=1114179148]
+transform = Transform3D(0.7071068, -0.6154344, -0.3481961, 0, -0.49242365, 0.87035567, -0.7071068, -0.6154344, -0.3481961, -2.399425, 13.859, -2.7033343)
+visible = false
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="." unique_id=736520813]
+environment = SubResource("Environment_uu6xs")
+
+[node name="TileDebugVisualizer" parent="." unique_id=1414358657 instance=ExtResource("5_q8u5g")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 16.637913, 0)
+
+[node name="FreeCamera" type="Camera3D" parent="." unique_id=1168280572]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 16.637913, 0)
+script = ExtResource("5_c01mt")
+
+[node name="MeshInstance3D2" type="MeshInstance3D" parent="." unique_id=780847396]
+transform = Transform3D(20, 0, 0, 0, 1, 0, 0, 0, 20, 5.7240024, 9.038577, 3.2392607)
+visible = false
+mesh = SubResource("BoxMesh_vcsgt")
+
+[node name="HUD" parent="." unique_id=1571919614 instance=ExtResource("6_c01mt")]
+
+[node name="EnemySpawnTest" type="Node3D" parent="." unique_id=556051037]
+
+[node name="EntityManager" type="Node3D" parent="." unique_id=1962956823]
+script = ExtResource("10_lhr70")
+
+[node name="WeaponManager" type="Node3D" parent="." unique_id=1431117216]

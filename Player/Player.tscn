@@ -1,0 +1,46 @@
+[gd_scene format=3 uid="uid://c65haismtwemy"]
+
+[ext_resource type="Script" uid="uid://cg4ejj3r3ja6q" path="res://Player/Scripts/Player.gd" id="1_3qydi"]
+
+[sub_resource type="CapsuleShape3D" id="CapsuleShape3D_r0du0"]
+radius = 0.3
+height = 1.5
+
+[sub_resource type="CapsuleMesh" id="CapsuleMesh_vcsgt"]
+radius = 0.3
+height = 1.5
+
+[sub_resource type="PrismMesh" id="PrismMesh_c01mt"]
+
+[node name="Player" type="CharacterBody3D" unique_id=1452008047]
+script = ExtResource("1_3qydi")
+
+[node name="Camera3D" type="Camera3D" parent="." unique_id=635228143]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.0027065277, 0.45553112, 0.0116586685)
+current = true
+far = 100.0
+
+[node name="Flashlight" type="SpotLight3D" parent="Camera3D" unique_id=765192853]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.0027065277, -0.40002334, -0.40695286)
+light_color = Color(0.99999994, 0.98312193, 0.9261582, 1)
+light_energy = 4.0
+spot_range = 5.84
+spot_angle = 48.35
+spot_angle_attenuation = 1.7411007
+
+[node name="WeaponHolder" type="Node3D" parent="Camera3D" unique_id=1534355253]
+transform = Transform3D(0.7999999, 0, 0, 0, 0.794522, -0.09346143, 0, 0.09346143, 0.794522, 0.6167247, -0.6517887, -0.99968725)
+
+[node name="ShootRayCast" type="RayCast3D" parent="Camera3D" unique_id=1501025550]
+transform = Transform3D(1, 0, 0, 0, -4.371139e-08, -1, 0, 1, -4.371139e-08, 0.6530969, -0.085936666, -1.1437967)
+collision_mask = 3
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="." unique_id=1078241214]
+shape = SubResource("CapsuleShape3D_r0du0")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="." unique_id=361637898]
+mesh = SubResource("CapsuleMesh_vcsgt")
+
+[node name="MeshInstance3D2" type="MeshInstance3D" parent="." unique_id=854357973]
+transform = Transform3D(1, 0, 0, 0, -0.008089271, -0.6999084, 0, 0.49993455, -0.011324979, -0.00568676, 0.44663906, -0.14904213)
+mesh = SubResource("PrismMesh_c01mt")

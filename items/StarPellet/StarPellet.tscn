@@ -1,0 +1,20 @@
+[gd_scene format=3 uid="uid://cobesaiai0qlq"]
+
+[node name="Node3D" type="Node3D" unique_id=1320344918]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.0029004812, 0)
+
+[node name="CSGCombiner3D" type="CSGCombiner3D" parent="." unique_id=1476340419]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.0049966574, 0)
+
+[node name="CSGPolygon3D" type="CSGPolygon3D" parent="CSGCombiner3D" unique_id=1677692507]
+polygon = PackedVector2Array(0, 0, 0, 1, 0.14239562, 0.50056356, 0, 0)
+mode = 1
+spin_degrees = 360.0
+spin_sides = 4
+
+[node name="CSGPolygon3D2" type="CSGPolygon3D" parent="CSGCombiner3D" unique_id=1830462948]
+transform = Transform3D(-5.237659e-05, 1, 0, -1, -5.237659e-05, 0, 0, 0, 1, -0.50206566, 0.5010822, -0.00045013428)
+polygon = PackedVector2Array(0, 0, 0, 1, 0.14264798, 0.50182533, 0, 0)
+mode = 1
+spin_degrees = 360.0
+spin_sides = 4

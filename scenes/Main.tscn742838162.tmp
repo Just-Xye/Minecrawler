@@ -1,0 +1,71 @@
+[gd_scene format=3 uid="uid://cri4rtq2dhqgc"]
+
+[ext_resource type="Script" uid="uid://dfxxttkxw8n3r" path="res://scenes/ChunkManager.gd" id="1_0bbpv"]
+[ext_resource type="PackedScene" uid="uid://c8abhq2u5fcat" path="res://scenes/Tile.tscn" id="2_uu6xs"]
+[ext_resource type="Script" uid="uid://cg4ejj3r3ja6q" path="res://Player/Scripts/Player.gd" id="3_r0du0"]
+[ext_resource type="Texture2D" uid="uid://cmgrbtkkll467" path="res://textures/crosshair.png" id="4_rarhs"]
+
+[sub_resource type="CapsuleShape3D" id="CapsuleShape3D_r0du0"]
+radius = 0.3
+height = 1.8
+
+[sub_resource type="PlaneMesh" id="PlaneMesh_r0du0"]
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_r0du0"]
+
+[sub_resource type="Environment" id="Environment_uu6xs"]
+background_mode = 2
+
+[node name="Main" type="Node3D" unique_id=1586957892]
+
+[node name="GridManager" type="Node" parent="." unique_id=451116529]
+script = ExtResource("1_0bbpv")
+tile_scene = ExtResource("2_uu6xs")
+
+[node name="Player" type="CharacterBody3D" parent="." unique_id=1167256209]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 11.857939, 15, 12.094401)
+script = ExtResource("3_r0du0")
+chunk_manager_path = NodePath("../GridManager")
+
+[node name="Camera3D" type="Camera3D" parent="Player" unique_id=1084266764]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.0027065277, 0.45553112, 0.0116586685)
+current = true
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Player" unique_id=1051750800]
+shape = SubResource("CapsuleShape3D_r0du0")
+
+[node name="CanvasLayer" type="CanvasLayer" parent="Player" unique_id=920524114]
+
+[node name="CenterContainer" type="CenterContainer" parent="Player/CanvasLayer" unique_id=28717595]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 550.0
+offset_top = 300.0
+offset_right = 550.0
+offset_bottom = 300.0
+grow_horizontal = 2
+grow_vertical = 2
+scale = Vector2(0.05, 0.05)
+mouse_filter = 2
+
+[node name="TextureRect" type="TextureRect" parent="Player/CanvasLayer/CenterContainer" unique_id=788305651]
+layout_mode = 2
+mouse_filter = 2
+texture = ExtResource("4_rarhs")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="." unique_id=2040313124]
+transform = Transform3D(20, 0, 0, 0, 1, 0, 0, 0, 20, 0, 0, 0)
+mesh = SubResource("PlaneMesh_r0du0")
+
+[node name="StaticBody3D" type="StaticBody3D" parent="MeshInstance3D" unique_id=2133447045]
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="MeshInstance3D/StaticBody3D" unique_id=96214144]
+transform = Transform3D(1.9999999, 0, 0, 0, 0.05, 0, 0, 0, 1.9999999, 0, 0, 0)
+shape = SubResource("BoxShape3D_r0du0")
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="." unique_id=1114179148]
+transform = Transform3D(0.70710677, -0.6154344, -0.3481961, 0, -0.49242365, 0.87035567, -0.70710677, -0.6154344, -0.3481961, -2.399425, 6.4407597, -2.7033343)
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="." unique_id=736520813]
+environment = SubResource("Environment_uu6xs")

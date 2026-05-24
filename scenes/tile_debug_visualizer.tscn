@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://wk8csdo2hatv"]
+
+[ext_resource type="Script" uid="uid://bldtv8nb61g1o" path="res://scenes/TileDebugVisualizer.gd" id="1_aokah"]
+
+[node name="TileDebugVisualizer" type="Node3D" unique_id=510026895]
+script = ExtResource("1_aokah")

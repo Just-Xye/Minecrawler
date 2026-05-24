@@ -1,0 +1,59 @@
+[gd_scene format=3 uid="uid://ddvphcjg650ve"]
+
+[ext_resource type="Script" uid="uid://uktgererktr3" path="res://MapDrawer.gd" id="1_ahhtf"]
+[ext_resource type="Script" uid="uid://y5d8nhacfxcx" path="res://scenes/PixelRect.gd" id="2_fls4u"]
+[ext_resource type="Texture2D" uid="uid://cwwsul3i3omng" path="res://textures/crosshair.png" id="3_1etfg"]
+
+[node name="HUD" type="CanvasLayer" unique_id=1571919614]
+
+[node name="PixelateRect" type="ColorRect" parent="." unique_id=1208420415]
+offset_right = 40.0
+offset_bottom = 40.0
+script = ExtResource("2_fls4u")
+
+[node name="MapContainer" type="Control" parent="." unique_id=579825729]
+custom_minimum_size = Vector2(300, 300)
+layout_mode = 3
+anchors_preset = 1
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -300.0
+offset_bottom = 300.0
+grow_horizontal = 0
+
+[node name="VBoxContainer" type="VBoxContainer" parent="MapContainer" unique_id=1668117568]
+layout_mode = 0
+offset_left = 130.0
+offset_top = 40.0
+offset_right = 170.0
+offset_bottom = 80.0
+
+[node name="MapDrawer" type="Control" parent="MapContainer/VBoxContainer" unique_id=1302553868]
+layout_mode = 2
+script = ExtResource("1_ahhtf")
+
+[node name="CenterContainer" type="CenterContainer" parent="MapContainer/VBoxContainer" unique_id=1602008614]
+layout_mode = 2
+
+[node name="Label" type="Label" parent="MapContainer/VBoxContainer/CenterContainer" unique_id=34721451]
+layout_mode = 2
+theme_override_font_sizes/font_size = 18
+horizontal_alignment = 1
+
+[node name="CenterContainer" type="CenterContainer" parent="." unique_id=1785796677]
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -19.400024
+offset_top = -19.400024
+offset_right = 108.599976
+offset_bottom = 108.599976
+grow_horizontal = 2
+grow_vertical = 2
+scale = Vector2(0.3, 0.3)
+
+[node name="TextureRect" type="TextureRect" parent="CenterContainer" unique_id=1616989878]
+layout_mode = 2
+texture = ExtResource("3_1etfg")

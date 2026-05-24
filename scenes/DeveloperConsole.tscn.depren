@@ -1,0 +1,37 @@
+[gd_scene format=3 uid="uid://cyssn3wrah4to"]
+
+[ext_resource type="Script" uid="uid://c4nbiu8caops7" path="res://scenes/DeveloperConsole.gd" id="1_ac1fu"]
+[ext_resource type="Script" uid="uid://dafvma4baxtuf" path="res://scenes/scripts/fps.gd" id="2_4jmgf"]
+
+[node name="DeveloperConsole" type="Control" unique_id=823417957]
+layout_mode = 3
+anchors_preset = 0
+offset_right = 40.0
+offset_bottom = 40.0
+script = ExtResource("1_ac1fu")
+
+[node name="Panel" type="Panel" parent="." unique_id=731041482]
+layout_mode = 0
+offset_right = 500.0
+offset_bottom = 400.0
+
+[node name="VBoxContainer" type="VBoxContainer" parent="Panel" unique_id=1687489177]
+layout_mode = 0
+offset_top = 400.0
+offset_right = 68.0
+offset_bottom = 440.0
+scale = Vector2(7.3, 1)
+
+[node name="RichTextLabel" type="RichTextLabel" parent="Panel/VBoxContainer" unique_id=1983614855]
+layout_mode = 2
+
+[node name="LineEdit" type="LineEdit" parent="Panel/VBoxContainer" unique_id=2132127741]
+layout_mode = 2
+
+[node name="Label" type="Label" parent="." unique_id=1976397236]
+layout_mode = 0
+offset_left = 5.0
+offset_top = 620.0
+offset_right = 45.0
+offset_bottom = 643.0
+script = ExtResource("2_4jmgf")
