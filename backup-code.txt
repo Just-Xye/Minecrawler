@@ -1,0 +1,9 @@
+var mat := StandardMaterial3D.new()
+
+func _ready() -> void:
+	mat = StandardMaterial3D.new()
+	mat.albedo_texture = preload("res://textures/tile.png")
+	mat.uv1_triplanar = true
+	mat.uv1_world_triplanar = false
+	mesh.material_override = mat
+	mat.uv1_offset = Vector3(0.5, 0.0, 0.5)

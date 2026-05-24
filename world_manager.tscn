@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://u1xp28ruauv6"]
+
+[ext_resource type="Script" uid="uid://dfxxttkxw8n3r" path="res://scenes/scripts/ChunkManager.gd" id="1_3giq8"]
+
+[node name="WorldManager" type="Node3D" unique_id=2022466116]
+script = ExtResource("1_3giq8")
