@@ -415,9 +415,8 @@ func _update_spawn_progress(cp: Vector2i) -> void:
 func _on_spawn_chunks_ready() -> void:
 	if _pending_flood_reveal:
 		_pending_flood_reveal = false
-		# Set flag for initial flood reveal (no animation)
 		_is_initial_flood_reveal = true
-		_execute_flood_reveal_with_retry()
+		await _execute_flood_reveal_with_retry()
 		_is_initial_flood_reveal = false
 		print("[ChunkManager] 3x3 chunks ready - executing initial flood reveal")
 	
@@ -447,6 +446,8 @@ func _execute_flood_reveal_with_retry() -> void:
 			_is_retrying = true
 			_retry_timer = FLOOD_RETRY_DELAY
 			_regenerate_world()
+			await get_tree().create_timer(FLOOD_RETRY_DELAY + 0.5).timeout
+			await _execute_flood_reveal_with_retry()  # ← RECURSIVE RETRY
 			return
 		else:
 			print("[ChunkManager] ERROR: Failed to create 3x3 clear area after %d attempts! Forcing generation layout..." % MAX_FLOOD_RETRIES)
@@ -483,6 +484,9 @@ func _regenerate_world() -> void:
 	
 	for cp in chunks.keys():
 		_enqueue_chunk_visual(chunks[cp])
+		
+	await get_tree().create_timer(0.1).timeout
+	get_tree().paused = false
 
 func _has_3x3_clear_area(center_cp: Vector2i, center_lx: int, center_lz: int) -> bool:
 	var base_gx = center_cp.x * CHUNK_SIZE + center_lx
@@ -931,5 +935,3 @@ func _find_loading_screen() -> void:
 	_loading_screen = get_parent().get_node_or_null("LoadingScreen")
 	if not _loading_screen:
 		push_warning("ChunkManager: Could not find LoadingScreen node!")
-		
-		
