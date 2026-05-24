@@ -1,0 +1,38 @@
+[gd_scene format=3 uid="uid://bg4wej8iv08q5"]
+
+[ext_resource type="AudioStream" uid="uid://cpkickiiplc5i" path="res://Sounds/UI/click.wav" id="1_3x70t"]
+
+[node name="CreditsUI" type="CanvasLayer" unique_id=313379059]
+
+[node name="CreditsPanel" type="Panel" parent="." unique_id=1484926827]
+visible = false
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="VBoxContainer" type="VBoxContainer" parent="CreditsPanel" unique_id=597290304]
+layout_mode = 1
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -39.5
+offset_top = -20.0
+offset_right = 39.5
+offset_bottom = 20.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="CreditsLabel" type="Label" parent="CreditsPanel/VBoxContainer" unique_id=1336681408]
+layout_mode = 2
+text = "Minecrawler came to me in a dream"
+
+[node name="BackButton" type="Button" parent="CreditsPanel/VBoxContainer" unique_id=1733034036]
+layout_mode = 2
+text = "<"
+
+[node name="AudioStreamPlayer3" type="AudioStreamPlayer" parent="CreditsPanel/VBoxContainer/BackButton" unique_id=1497982752]
+stream = ExtResource("1_3x70t")

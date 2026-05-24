@@ -1,0 +1,141 @@
+[gd_scene format=3 uid="uid://b8niq1g8xk0xs"]
+
+[ext_resource type="Script" uid="uid://bjsw58se3u71v" path="res://MainMenu.gd" id="1_b37jj"]
+[ext_resource type="Script" uid="uid://ds673vwybjujm" path="res://UI/MainMenu.gd" id="1_w5vcv"]
+[ext_resource type="Script" uid="uid://c30usnukucu8u" path="res://scenes/MenuChunkManager.gd" id="2_otjfi"]
+[ext_resource type="FontFile" uid="uid://blgrredwgtthp" path="res://UI/fonts/MonumentValley12-X55o.otf" id="3_8aown"]
+[ext_resource type="FontFile" uid="uid://bhc8fdmjk4u8f" path="res://UI/fonts/MomcakeThin-9Y6aZ.otf" id="3_t6syg"]
+[ext_resource type="AudioStream" uid="uid://cpkickiiplc5i" path="res://Sounds/UI/click.wav" id="4_t6syg"]
+[ext_resource type="Script" uid="uid://cst212qv4td2v" path="res://Scripts/MenuWorldGenerator.gd" id="6_t4ff4"]
+[ext_resource type="PackedScene" uid="uid://c8abhq2u5fcat" path="res://scenes/Tile.tscn" id="8_d2d4f"]
+[ext_resource type="Script" uid="uid://ivel763yqgcf" path="res://UI/MenuUIManager.gd" id="8_t4ff4"]
+
+[sub_resource type="Curve3D" id="Curve3D_6vw7e"]
+
+[sub_resource type="Environment" id="Environment_t4ff4"]
+background_mode = 1
+tonemap_mode = 3
+glow_enabled = true
+glow_intensity = 0.8
+glow_bloom = 0.2
+glow_hdr_threshold = 0.8
+fog_light_color = Color(0.42403823, 0.45768136, 0.5081496, 1)
+fog_density = 0.03
+volumetric_fog_density = 0.6283
+volumetric_fog_emission = Color(0.87211996, 0.8744631, 0.86835593, 1)
+adjustment_contrast = 0.995
+
+[sub_resource type="LabelSettings" id="LabelSettings_t6syg"]
+font = ExtResource("3_8aown")
+font_size = 73
+
+[node name="MainMenu" type="Node" unique_id=22617161]
+script = ExtResource("1_w5vcv")
+
+[node name="MenuWorld" type="Node3D" parent="." unique_id=427669544]
+script = ExtResource("6_t4ff4")
+
+[node name="GridManager" type="Node" parent="MenuWorld" unique_id=1813922678]
+script = ExtResource("2_otjfi")
+tile_scene = ExtResource("8_d2d4f")
+
+[node name="Path3D" type="Path3D" parent="MenuWorld" unique_id=1764370337]
+curve = SubResource("Curve3D_6vw7e")
+
+[node name="PathFollow3D" type="PathFollow3D" parent="MenuWorld/Path3D" unique_id=1590171361]
+
+[node name="Camera3D" type="Camera3D" parent="MenuWorld/Path3D/PathFollow3D" unique_id=509089604]
+current = true
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="MenuWorld" unique_id=1357212267]
+environment = SubResource("Environment_t4ff4")
+
+[node name="MenuUIManager" type="Node" parent="." unique_id=443454811]
+script = ExtResource("8_t4ff4")
+
+[node name="MenuUI" type="CanvasLayer" parent="." unique_id=834429973]
+script = ExtResource("1_b37jj")
+
+[node name="CenterContainer" type="CenterContainer" parent="MenuUI" unique_id=1084314046]
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -157.5
+offset_top = -104.0
+offset_right = 157.5
+offset_bottom = 104.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="VBoxContainer" type="VBoxContainer" parent="MenuUI/CenterContainer" unique_id=651155166]
+layout_mode = 2
+
+[node name="TitleLabel" type="Label" parent="MenuUI/CenterContainer/VBoxContainer" unique_id=322260547]
+layout_mode = 2
+text = "Minecrawler"
+label_settings = SubResource("LabelSettings_t6syg")
+
+[node name="Spacer" type="Control" parent="MenuUI/CenterContainer/VBoxContainer" unique_id=2093652088]
+layout_mode = 2
+
+[node name="StartButton" type="Button" parent="MenuUI/CenterContainer/VBoxContainer" unique_id=1402677774]
+custom_minimum_size = Vector2(100, 0)
+layout_mode = 2
+size_flags_horizontal = 4
+size_flags_vertical = 5
+theme_override_fonts/font = ExtResource("3_t6syg")
+theme_override_font_sizes/font_size = 24
+text = "Start Game"
+
+[node name="AudioStreamPlayer" type="AudioStreamPlayer" parent="MenuUI/CenterContainer/VBoxContainer/StartButton" unique_id=1732202649]
+stream = ExtResource("4_t6syg")
+
+[node name="OptionsButton" type="Button" parent="MenuUI/CenterContainer/VBoxContainer" unique_id=608091786]
+custom_minimum_size = Vector2(100, 0)
+layout_mode = 2
+size_flags_horizontal = 4
+size_flags_vertical = 5
+theme_override_fonts/font = ExtResource("3_t6syg")
+theme_override_font_sizes/font_size = 24
+text = "Options"
+
+[node name="AudioStreamPlayer" type="AudioStreamPlayer" parent="MenuUI/CenterContainer/VBoxContainer/OptionsButton" unique_id=1249671915]
+stream = ExtResource("4_t6syg")
+
+[node name="CreditsButton" type="Button" parent="MenuUI/CenterContainer/VBoxContainer" unique_id=1079813118]
+custom_minimum_size = Vector2(100, 0)
+layout_mode = 2
+size_flags_horizontal = 4
+size_flags_vertical = 5
+theme_override_fonts/font = ExtResource("3_t6syg")
+theme_override_font_sizes/font_size = 24
+text = "Credits"
+
+[node name="AudioStreamPlayer" type="AudioStreamPlayer" parent="MenuUI/CenterContainer/VBoxContainer/CreditsButton" unique_id=1486843989]
+stream = ExtResource("4_t6syg")
+
+[node name="QuitButton" type="Button" parent="MenuUI/CenterContainer/VBoxContainer" unique_id=952926661]
+custom_minimum_size = Vector2(100, 0)
+layout_mode = 2
+size_flags_horizontal = 4
+size_flags_vertical = 5
+theme_override_fonts/font = ExtResource("3_t6syg")
+theme_override_font_sizes/font_size = 24
+text = "Quit Game"
+
+[node name="AudioStreamPlayer" type="AudioStreamPlayer" parent="MenuUI/CenterContainer/VBoxContainer/QuitButton" unique_id=1928336859]
+stream = ExtResource("4_t6syg")
+
+[node name="VBoxContainer2" type="VBoxContainer" parent="MenuUI/CenterContainer" unique_id=6505022]
+layout_mode = 2
+
+[connection signal="pressed" from="MenuUI/CenterContainer/VBoxContainer/StartButton" to="." method="_on_start_button_pressed"]
+[connection signal="pressed" from="MenuUI/CenterContainer/VBoxContainer/StartButton" to="MenuUI" method="_on_start_button_pressed"]
+[connection signal="pressed" from="MenuUI/CenterContainer/VBoxContainer/OptionsButton" to="." method="_on_options_button_pressed"]
+[connection signal="pressed" from="MenuUI/CenterContainer/VBoxContainer/OptionsButton" to="MenuUI" method="_on_options_button_pressed"]
+[connection signal="pressed" from="MenuUI/CenterContainer/VBoxContainer/CreditsButton" to="." method="_on_credits_button_pressed"]
+[connection signal="pressed" from="MenuUI/CenterContainer/VBoxContainer/CreditsButton" to="MenuUI" method="_on_credits_button_pressed"]
+[connection signal="pressed" from="MenuUI/CenterContainer/VBoxContainer/QuitButton" to="." method="_on_quit_button_pressed"]
+[connection signal="pressed" from="MenuUI/CenterContainer/VBoxContainer/QuitButton" to="MenuUI" method="_on_quit_button_pressed"]
