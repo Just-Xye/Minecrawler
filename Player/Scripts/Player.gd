@@ -24,8 +24,8 @@ var lives        : int   = MAX_LIVES
 var is_immortal  : bool  = false
 var _hit_timer   : float = 0.0
 
-signal life_lost(lives_remaining: int)
-signal life_gained(lives_remaining: int)
+signal life_lost
+signal life_gained
 signal lives_depleted
 
 # ─────────────────────────────────────────────────────────────
@@ -143,14 +143,6 @@ func _physics_process(delta: float) -> void:
 	if _hit_timer > 0:
 		_hit_timer -= delta
 	
-	if not _initial_spawn_complete:
-		return
-	
-	# Skip normal movement if sinking with a tile
-	if _is_sinking_with_tile:
-		move_and_slide()
-		return
-
 	# Apply gravity
 	if not is_on_floor():
 		velocity.y -= gravity * delta
@@ -229,10 +221,10 @@ func lose_life() -> void:
 		lives -= 1
 		_hit_timer = HIT_INVULN_SECS
 		print("[Player] Life lost! Lives remaining: %d" % lives)
-		emit_signal("life_lost", lives)
+		life_lost.emit()
 		
 		if lives <= 0:
-			emit_signal("lives_depleted")
+			lives_depleted.emit()
 
 func lose_all_lives() -> void:
 	if is_immortal:
@@ -242,14 +234,13 @@ func lose_all_lives() -> void:
 	lives = 0
 	print("[Player] Caught by enemy — all lives lost!")
 	_flash_red_screen()
-	emit_signal("life_lost", 0)
-	emit_signal("lives_depleted")
+	lives_depleted.emit()
 
 func gain_life() -> void:
 	if lives < MAX_LIVES:
 		lives += 1
 		print("[Player] Life gained! Lives: %d" % lives)
-		emit_signal("life_gained", lives)
+		life_gained.emit()
 	else:
 		print("[Player] Already at max lives (%d)" % MAX_LIVES)
 
@@ -327,7 +318,7 @@ func _shoot_weapon() -> void:
 	_is_shooting = true
 	_shoot_cooldown = SHOOT_COOLDOWN_TIME
 	_play_weapon_animation("shoot")
-	shoot_ray_cast.force_raycast_update()
+	
 	if shoot_ray_cast.is_colliding():
 		var collider = shoot_ray_cast.get_collider()
 		var enemy = _find_enemy_parent(collider)
