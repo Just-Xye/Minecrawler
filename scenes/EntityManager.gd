@@ -19,43 +19,55 @@ const SPAWN_DELAY_MIN       : float = 10.0
 const SPAWN_DELAY_MAX       : float = 15.0
 const SPEED_SLOW            : float = 3.5
 const SPEED_FAST            : float = 6.2
+const SPEED_HUNT            : float = 7.5
 const SPEED_PLAYER_REF      : float = 5.5
 const LOS_REACT_MIN         : float = 0.5
 const LOS_REACT_MAX         : float = 2.0
 const DESPAWN_TIMEOUT       : float = 300.0
 const RESPAWN_AFTER_DESPAWN : float = 5.0
-const WANDER_RETARGET_TIME  : float = 2.5
-const STEP_INTERVAL         : float = 0.15
+const WANDER_RETARGET_TIME  : float = 3.0
+const STEP_INTERVAL         : float = 0.12
 const LOS_MAX_DIST          : float = 18.0
 const ENTITY_HEIGHT         : float = 1.5
 const ROTATION_SPEED        : float = 5.0
-const RANDOM_PATH_BIAS      : float = 0.6
-const STUCK_THRESHOLD       : float = 0.5
-const MIN_PATH_DISTANCE     : float = 0.5
-const MIN_GAP_SIZE          : float = 1.5
-const SPEED_HUNT            : float = 7.5
-const ASTAR_COOLDOWN_HUNT   : float = 0.15
+const MIN_PATH_DISTANCE     : float = 0.4
+const STUCK_THRESHOLD       : float = 0.6
+const STUCK_MOVE_MIN        : float = 0.08
 
-# 3-minute initial lock before the sweeper can ever spawn
+# First-spawn lock before sweeper can ever appear
 const FIRST_SPAWN_LOCK      : float = 180.0
 
-# Pathfinding cooldowns (performance optimization)
-const BFS_COOLDOWN_WANDER     : float = 1.0   # Recalc path every 1s when wandering
-const BFS_COOLDOWN_CHASE      : float = 0.3   # Recalc path every 0.3s when chasing
-const BFS_COOLDOWN_LAST_KNOWN : float = 0.5   # Recalc path every 0.5s when tracking
-const BFS_COOLDOWN_HUNT       : float = 0.15
-const MAX_CACHE_SIZE          : int   = 500   # Max cache entries before clearing
+# ─────────────────────────────────────────────────────────────
+# PATHFINDING TUNABLES
+# ─────────────────────────────────────────────────────────────
 
-# Sound constants
+const ASTAR_MAX_NODES_WANDER     : int   = 400
+const ASTAR_MAX_NODES_CHASE      : int   = 600
+const ASTAR_MAX_NODES_HUNT       : int   = 800
+
+const REPATH_INTERVAL_WANDER     : float = 1.2
+const REPATH_INTERVAL_CHASE      : float = 0.35
+const REPATH_INTERVAL_LAST_KNOWN : float = 0.55
+const REPATH_INTERVAL_HUNT       : float = 0.18
+
+# Target must move this many tiles before forcing an early repath
+const REPATH_TARGET_DRIFT        : float = 2.5
+
+const MAX_STUCK_REPATHS          : int   = 8
+const FLOW_FALLBACK_ENABLED      : bool  = true
+
+const CACHE_MAX_SIZE             : int   = 800
+const CACHE_TTL_FRAMES           : int   = 6
+
+# ─────────────────────────────────────────────────────────────
+# SOUND CONSTANTS
+# ─────────────────────────────────────────────────────────────
+
 const SOUND_MAX_DISTANCE    : float = 50.0
-const SOUND_MIN_DISTANCE    : float = 10.0
 const SOUND_UPDATE_INTERVAL : float = 0.1
 const SIGHT_SOUND_COOLDOWN  : float = 5.0
 const JUMPSCARE_VOLUME_DB   : float = -6.0
 const SPAWN_SOUND_VOLUME_DB : float = -18.0
-
-# BFS limits
-const BFS_MAX_STEPS         : int = 300  # Reduced from 500 for performance
 
 # ─────────────────────────────────────────────────────────────
 # STATE MACHINE
@@ -88,78 +100,64 @@ var _state          : State    = State.WAITING_FOR_WORLD
 var _move_mode      : MoveMode = MoveMode.WANDER
 var _collision_body : CharacterBody3D = null
 
-# Timers
 var _spawn_timer     : float = 0.0
 var _despawn_timer   : float = 0.0
 var _respawn_timer   : float = 0.0
 var _wander_timer    : float = 0.0
 var _step_timer      : float = 0.0
 var _los_react_timer : float = 0.0
-var _bfs_cooldown    : float = 0.0  # Performance: throttle BFS calls
+var _repath_timer    : float = 0.0
 
 var _skip_active_wait : bool = false
+var _is_hunting       : bool = false
 
-var _is_hunting   : bool = false
+var _first_input_received   : bool  = false
+var _first_spawn_lock_timer : float = 0.0
 
-# 3-minute lock
-var _first_input_received     : bool  = false
-var _first_spawn_lock_timer   : float = 0.0
-
-# Entity
 var _entity_node : Node3D  = null
 var _entity_pos  : Vector3 = Vector3.ZERO
 
-# Movement
 var _current_speed : float = SPEED_SLOW
 var _target_speed  : float = SPEED_SLOW
 var _los_reacting  : bool  = false
 
-# Pathfinding
-var _last_known_player    : Vector3 = Vector3.ZERO
-var _wander_target        : Vector3 = Vector3.ZERO
 var _path                 : Array[Vector3] = []
-var _current_target_index : int = 0
+var _current_target_index : int      = 0
+var _last_known_player    : Vector3  = Vector3.ZERO
+var _last_path_target     : Vector2i = Vector2i(-9999, -9999)
 
-# Player tracking
-var _player_was_active : bool  = false
+var _last_position      : Vector3 = Vector3.ZERO
+var _stuck_timer        : float   = 0.0
+var _stuck_repath_count : int     = 0
+
 var _prev_player_pos   : Vector3 = Vector3.ZERO
 var _prev_player_basis : Basis   = Basis.IDENTITY
 
-# Rotation
-var _target_rotation  : float = 0.0
 var _current_rotation : float = 0.0
 
-# Animation
 var _animation_player : AnimationPlayer = null
 var _current_anim     : String = ""
 
-# Stuck detection
-var _last_position      : Vector3 = Vector3.ZERO
-var _stuck_timer        : float   = 0.0
-var _path_refresh_count : int     = 0
-
 # ─────────────────────────────────────────────────────────────
-# CACHING (Performance optimization)
+# WALKABILITY CACHE  (packed int key -> {v: bool, f: int})
 # ─────────────────────────────────────────────────────────────
 
-var _walkable_cache : Dictionary = {}  # Cache walkability results
-var _width_cache    : Dictionary = {}  # Cache tile width results
-var _cache_frame    : int = 0          # Frame number for cache invalidation
+var _walkable_cache : Dictionary = {}
+var _current_frame  : int = 0
 
 # ─────────────────────────────────────────────────────────────
 # AUDIO
 # ─────────────────────────────────────────────────────────────
 
-var _audio_stream_player    : AudioStreamPlayer3D = null
-var _sight_sound_player     : AudioStreamPlayer3D = null
-var _spawn_sound_player     : AudioStreamPlayer3D = null
-var _sound_update_timer     : float = 0.0
-var _is_sound_playing       : bool  = false
-var _last_sight_sound_time  : float = 0.0
+var _audio_stream_player   : AudioStreamPlayer3D = null
+var _sight_sound_player    : AudioStreamPlayer3D = null
+var _spawn_sound_player    : AudioStreamPlayer3D = null
+var _sound_update_timer    : float = 0.0
+var _is_sound_playing      : bool  = false
+var _last_sight_sound_time : float = 0.0
 
-# Jumpscare
-var _jumpscare_player       : AudioStreamPlayer = null
-var _jumpscare_timer        : float = 0.0
+var _jumpscare_player : AudioStreamPlayer = null
+var _jumpscare_timer  : float = 0.0
 
 # ─────────────────────────────────────────────────────────────
 # SETUP
@@ -175,12 +173,16 @@ func set_targets(cm: ChunkManager, p: CharacterBody3D) -> void:
 func _on_chunk_loaded(_chunk_pos: Vector2i) -> void:
 	_invalidate_cache()
 
+func _on_world_ready() -> void:
+	_state = State.WAITING_FOR_ACTIVE
+
 # ─────────────────────────────────────────────────────────────
 # LIFECYCLE
 # ─────────────────────────────────────────────────────────────
 
 func _process(delta: float) -> void:
-	# Tick the first-spawn lock
+	_current_frame = Engine.get_process_frames()
+
 	if _first_input_received and _first_spawn_lock_timer < FIRST_SPAWN_LOCK:
 		_first_spawn_lock_timer += delta
 
@@ -189,22 +191,16 @@ func _process(delta: float) -> void:
 			pass
 
 		State.WAITING_FOR_ACTIVE:
-			if _spawn_timer < 0:
+			if _spawn_timer < 0.0:
 				return
 			if _is_player_active():
 				if not _first_input_received:
 					_first_input_received = true
 					print("[EntityManager] First player input — 3-minute spawn lock started.")
-
-				if _skip_active_wait:
-					_begin_spawn_delay()
-					_skip_active_wait = false
-				else:
-					_player_was_active = true
-					_begin_spawn_delay()
+				_begin_spawn_delay()
 
 		State.SPAWN_DELAY:
-			if _spawn_timer < 0:
+			if _spawn_timer < 0.0:
 				return
 			_spawn_timer -= delta
 			if _spawn_timer <= 0.0:
@@ -217,362 +213,522 @@ func _process(delta: float) -> void:
 			_update_alive(delta)
 			if player and is_instance_valid(_entity_node):
 				_rotate_towards_player(delta)
-				_update_animation(delta)
+				_update_animation()
 			_update_sound(delta)
 
 		State.JUMPSCARE:
 			_tick_jumpscare(delta)
 
 		State.DESPAWNED:
-			if _respawn_timer < 0:
+			if _respawn_timer < 0.0:
 				return
 			_respawn_timer -= delta
 			if _respawn_timer <= 0.0:
 				_state = State.WAITING_FOR_ACTIVE
 				_skip_active_wait = true
 
-# ─────────────────────────────────────────────────────────────
-# CACHE MANAGEMENT
-# ─────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════
+#  WALKABILITY CACHE
+# ═══════════════════════════════════════════════════════════════
+
+func _tile_key(wx: int, wz: int) -> int:
+	return (wx & 0xFFFFFFFF) | ((wz & 0xFFFFFFFF) << 32)
 
 func _invalidate_cache() -> void:
-	"""Clear caches when chunks change"""
 	_walkable_cache.clear()
-	_width_cache.clear()
-	_cache_frame = Engine.get_process_frames()
 
-func _is_tile_wide_enough_cached(wx: int, wz: int) -> bool:
-	"""Cached version of width check - 3x3 cell lookup"""
-	var cache_key := "%d,%d" % [wx, wz]
-	
-	if _width_cache.has(cache_key):
-		return _width_cache[cache_key]
-	
-	if not chunk_manager:
-		return false
-	
-	# Check 3x3 area around tile
-	for dx in range(-1, 2):
-		for dz in range(-1, 2):
-			var check_x := wx + dx
-			var check_z := wz + dz
-			var cell := chunk_manager.get_map_cell(check_x, check_z)
-			if cell["state"] == "hidden" or cell["state"] == "mine":
-				_width_cache[cache_key] = false
-				return false
-	
-	_width_cache[cache_key] = true
-	return true
-
-func _is_tile_walkable_cached(wx: int, wz: int) -> bool:
-	"""Cached version of walkability check"""
-	var cache_key := "%d,%d" % [wx, wz]
-	
-	# Periodic cache cleanup
-	if _cache_frame != Engine.get_process_frames():
-		_cache_frame = Engine.get_process_frames()
-		if _walkable_cache.size() > MAX_CACHE_SIZE:
+func _cache_prune() -> void:
+	if _walkable_cache.size() > CACHE_MAX_SIZE:
+		var expired : Array = []
+		for k in _walkable_cache:
+			if (_current_frame - _walkable_cache[k]["f"]) > CACHE_TTL_FRAMES:
+				expired.append(k)
+		for k in expired:
+			_walkable_cache.erase(k)
+		if _walkable_cache.size() > CACHE_MAX_SIZE:
 			_walkable_cache.clear()
-			_width_cache.clear()
-	
-	if _walkable_cache.has(cache_key):
-		return _walkable_cache[cache_key]
-	
+
+func _is_tile_walkable(wx: int, wz: int) -> bool:
+	var key   := _tile_key(wx, wz)
+	var entry  = _walkable_cache.get(key)
+	if entry and (_current_frame - entry["f"]) <= CACHE_TTL_FRAMES:
+		return entry["v"]
+
+	_cache_prune()
+
 	if not chunk_manager:
 		return false
-	
+
 	var chunk_pos := Vector2i(
 		floori(float(wx) / chunk_manager.CHUNK_SIZE),
 		floori(float(wz) / chunk_manager.CHUNK_SIZE)
 	)
 	if not chunk_manager.chunks.has(chunk_pos):
+		_walkable_cache[key] = {"v": false, "f": _current_frame}
 		return false
-	
-	var cell := chunk_manager.get_map_cell(wx, wz)
-	if cell["state"] == "revealed" and not _is_tile_wide_enough_cached(wx, wz):
-		_walkable_cache[cache_key] = false
-		return false
-	
-	var result = cell["state"] == "revealed"
-	_walkable_cache[cache_key] = result
+
+	var cell   := chunk_manager.get_map_cell(wx, wz)
+	var result : bool = cell["state"] == "revealed"
+	_walkable_cache[key] = {"v": result, "f": _current_frame}
 	return result
 
-func _is_diagonal_passable_cached(fx: int, fz: int, tx: int, tz: int) -> bool:
+func _is_diagonal_passable(fx: int, fz: int, tx: int, tz: int) -> bool:
 	var dx := tx - fx
 	var dz := tz - fz
 	if dx == 0 or dz == 0:
 		return true
-	return _is_tile_walkable_cached(fx + dx, fz) and _is_tile_walkable_cached(fx, fz + dz)
+	return _is_tile_walkable(fx + dx, fz) and _is_tile_walkable(fx, fz + dz)
 
-# ─────────────────────────────────────────────────────────────
-# DEBUG SKIP
-# ─────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════
+#  A* PATHFINDING
+# ═══════════════════════════════════════════════════════════════
 
-func skip_first_spawn_lock() -> void:
-	_first_spawn_lock_timer = FIRST_SPAWN_LOCK
-	_first_input_received   = true
-	print("[EntityManager] DEBUG: First-spawn lock skipped.")
+const _DIRS : Array[Vector2i] = [
+	Vector2i( 1, 0), Vector2i(-1, 0), Vector2i( 0, 1), Vector2i( 0,-1),
+	Vector2i( 1, 1), Vector2i( 1,-1), Vector2i(-1, 1), Vector2i(-1,-1),
+]
+const _CARDINAL_COST : float = 1.0
+const _DIAGONAL_COST : float = 1.414
 
-# ─────────────────────────────────────────────────────────────
-# SOUND SYSTEM
-# ─────────────────────────────────────────────────────────────
+func _heuristic(a: Vector2i, b: Vector2i) -> float:
+	var dx := absi(a.x - b.x)
+	var dz := absi(a.y - b.y)
+	return _CARDINAL_COST * maxi(dx, dz) + (_DIAGONAL_COST - _CARDINAL_COST) * mini(dx, dz)
 
-func _setup_sound() -> void:
-	if not _entity_node:
+func _astar_path(from: Vector3, to: Vector3, max_nodes: int, randomize_ties: bool = false) -> Array[Vector3]:
+	if not chunk_manager:
+		return []
+
+	var start := Vector2i(floori(from.x), floori(from.z))
+	var goal  := Vector2i(floori(to.x),   floori(to.z))
+
+	if start == goal:
+		return []
+
+	if not _is_tile_walkable(goal.x, goal.y):
+		goal = _nearest_walkable_to(goal, start, 4)
+		if goal == start:
+			return []
+
+	# Open set: sorted Array of [f_cost, g_cost, Vector2i]
+	var open_set : Array    = []
+	var g_cost   : Dictionary = {}
+	var parent   : Dictionary = {}
+
+	g_cost[start] = 0.0
+	_pq_push(open_set, [_heuristic(start, goal), 0.0, start])
+
+	var expanded : int  = 0
+	var found    : bool = false
+
+	while open_set.size() > 0 and expanded < max_nodes:
+		var entry = _pq_pop(open_set)
+		var cur : Vector2i = entry[2]
+		expanded += 1
+
+		if cur == goal:
+			found = true
+			break
+
+		var cur_g : float = g_cost.get(cur, INF)
+
+		var dir_list = _DIRS.duplicate()
+		if randomize_ties:
+			dir_list.shuffle()
+
+		for d in dir_list:
+			var nb : Vector2i = cur + d
+			if not _is_tile_walkable(nb.x, nb.y):
+				continue
+			if not _is_diagonal_passable(cur.x, cur.y, nb.x, nb.y):
+				continue
+
+			var step_cost : float = _DIAGONAL_COST if (d.x != 0 and d.y != 0) else _CARDINAL_COST
+			var tent_g    : float = cur_g + step_cost
+			var exist_g   : float = g_cost.get(nb, INF)
+
+			if tent_g < exist_g:
+				g_cost[nb] = tent_g
+				parent[nb] = cur
+				_pq_push(open_set, [tent_g + _heuristic(nb, goal), tent_g, nb])
+
+	if not found:
+		if not FLOW_FALLBACK_ENABLED:
+			return []
+		return _partial_path_to_closest(parent, g_cost, goal)
+
+	var tiles : Array[Vector2i] = []
+	var step  : Vector2i = goal
+	while parent.has(step):
+		tiles.push_front(step)
+		step = parent[step]
+
+	return _tiles_to_world(tiles, from.y)
+
+# ─── Min-heap via sorted-insert ───────────────────────────────
+
+func _pq_push(heap: Array, entry: Array) -> void:
+	var lo := 0; var hi := heap.size(); var f : float = entry[0]
+	while lo < hi:
+		var mid := (lo + hi) / 2
+		if heap[mid][0] < f: lo = mid + 1
+		else:                 hi = mid
+	heap.insert(lo, entry)
+
+func _pq_pop(heap: Array) -> Array:
+	return heap.pop_front()
+
+# ─── Helpers ──────────────────────────────────────────────────
+
+func _nearest_walkable_to(target: Vector2i, reference: Vector2i, radius: int) -> Vector2i:
+	var best := reference; var best_d := INF
+	for dx in range(-radius, radius + 1):
+		for dz in range(-radius, radius + 1):
+			var c := target + Vector2i(dx, dz)
+			if _is_tile_walkable(c.x, c.y):
+				var d := _heuristic(c, reference)
+				if d < best_d: best_d = d; best = c
+	return best
+
+func _partial_path_to_closest(parent: Dictionary, g_cost: Dictionary, goal: Vector2i) -> Array[Vector3]:
+	if parent.is_empty():
+		return []
+	var best_node : Vector2i = Vector2i.ZERO
+	var best_h    : float    = INF
+	var any       : bool     = false
+	for node in g_cost.keys():
+		if not (node is Vector2i): continue
+		var h := _heuristic(node, goal)
+		if h < best_h: best_h = h; best_node = node; any = true
+	if not any:
+		return []
+	var tiles : Array[Vector2i] = []
+	var step  : Vector2i = best_node
+	while parent.has(step):
+		tiles.push_front(step)
+		step = parent[step]
+	return _tiles_to_world(tiles, _entity_pos.y)
+
+func _tiles_to_world(tiles: Array[Vector2i], y: float) -> Array[Vector3]:
+	var result : Array[Vector3] = []
+	for t in tiles:
+		result.append(Vector3(t.x + 0.5, y, t.y + 0.5))
+	return result
+
+# ═══════════════════════════════════════════════════════════════
+#  PATH SIMPLIFICATION  (Bresenham line-of-sight string-pull)
+# ═══════════════════════════════════════════════════════════════
+
+func _simplify_path(path: Array[Vector3]) -> Array[Vector3]:
+	if path.size() <= 2:
+		return path
+	var result : Array[Vector3] = [path[0]]
+	var anchor := 0; var i := 1
+	while i < path.size():
+		if not _has_clear_path_world(path[anchor], path[i]):
+			result.append(path[i - 1])
+			anchor = i - 1
+		i += 1
+	result.append(path[path.size() - 1])
+	return result
+
+func _has_clear_path_world(a: Vector3, b: Vector3) -> bool:
+	var ax := floori(a.x); var az := floori(a.z)
+	var bx := floori(b.x); var bz := floori(b.z)
+	var dx := absi(bx - ax); var dz := absi(bz - az)
+	var sx := 1 if ax < bx else -1; var sz := 1 if az < bz else -1
+	var err := dx - dz
+	var steps := dx + dz + 2
+	for _i in range(steps):
+		if not _is_tile_walkable(ax, az): return false
+		if ax == bx and az == bz: break
+		var e2 := err * 2
+		if e2 > -dz: err -= dz; ax += sx
+		if e2 <  dx: err += dx; az += sz
+	return true
+
+# ═══════════════════════════════════════════════════════════════
+#  REPATH SYSTEM
+# ═══════════════════════════════════════════════════════════════
+
+func _should_repath(target_tile: Vector2i) -> bool:
+	if _repath_timer <= 0.0: return true
+	if _path.is_empty():     return true
+	if _last_path_target.distance_squared_to(target_tile) > int(REPATH_TARGET_DRIFT * REPATH_TARGET_DRIFT):
+		return true
+	# Staleness: next waypoint became non-walkable
+	if _current_target_index < _path.size():
+		var nxt := _path[_current_target_index]
+		if not _is_tile_walkable(floori(nxt.x), floori(nxt.z)):
+			return true
+	return false
+
+func _do_repath(target_pos: Vector3, mode: MoveMode) -> void:
+	var max_nodes : int
+	var rand_ties : bool = false
+	match mode:
+		MoveMode.WANDER:
+			max_nodes = ASTAR_MAX_NODES_WANDER
+			rand_ties = true
+		MoveMode.CHASE_LOS:
+			max_nodes = ASTAR_MAX_NODES_CHASE
+		MoveMode.LAST_KNOWN:
+			max_nodes = ASTAR_MAX_NODES_CHASE
+		MoveMode.HUNT:
+			max_nodes = ASTAR_MAX_NODES_HUNT
+		_:
+			max_nodes = ASTAR_MAX_NODES_CHASE
+
+	var new_path := _astar_path(_entity_pos, target_pos, max_nodes, rand_ties)
+	new_path = _simplify_path(new_path)
+
+	# Emergency shorter retry if A* failed
+	if new_path.is_empty() and mode != MoveMode.WANDER:
+		new_path = _astar_path(_entity_pos, target_pos, 150, false)
+
+	_path = new_path
+	_current_target_index = 0
+	_last_path_target = Vector2i(floori(target_pos.x), floori(target_pos.z))
+
+	match mode:
+		MoveMode.WANDER:     _repath_timer = REPATH_INTERVAL_WANDER
+		MoveMode.CHASE_LOS:  _repath_timer = REPATH_INTERVAL_CHASE
+		MoveMode.LAST_KNOWN: _repath_timer = REPATH_INTERVAL_LAST_KNOWN
+		MoveMode.HUNT:       _repath_timer = REPATH_INTERVAL_HUNT
+		_:                   _repath_timer = REPATH_INTERVAL_CHASE
+
+# ═══════════════════════════════════════════════════════════════
+#  ALIVE UPDATE
+# ═══════════════════════════════════════════════════════════════
+
+func _update_alive(delta: float) -> void:
+	if not is_instance_valid(_entity_node):
+		_state = State.WAITING_FOR_ACTIVE
 		return
 
-	_audio_stream_player = AudioStreamPlayer3D.new()
-	_audio_stream_player.name = "EntitySound"
-	var sound_stream = load("res://Sounds/Sweeper/sample_sound.ogg")
-	if sound_stream:
-		_audio_stream_player.stream = sound_stream
+	_despawn_timer -= delta
+	if _despawn_timer <= 0.0:
+		_do_despawn()
+		return
+
+	_repath_timer -= delta
+	_step_timer   -= delta
+
+	var player_tile_center : Vector3 = _get_tile_center(player.global_position if player else Vector3.ZERO)
+	var has_los : bool = _is_hunting or _check_line_of_sight(player_tile_center)
+
+	# ── Mode transitions ──────────────────────────────────────
+
+	if has_los:
+		_last_known_player = player_tile_center
+		_despawn_timer     = DESPAWN_TIMEOUT
+
+		if _move_mode == MoveMode.WANDER or _move_mode == MoveMode.LAST_KNOWN:
+			_play_sight_sound()
+			_move_mode       = MoveMode.HUNT if _is_hunting else MoveMode.CHASE_LOS
+			_los_react_timer = 0.0 if _is_hunting else randf_range(LOS_REACT_MIN, LOS_REACT_MAX)
+			_los_reacting    = not _is_hunting
+			_current_speed   = SPEED_SLOW
+			_path.clear()
+			_repath_timer    = 0.0
+			_last_path_target = Vector2i(-9999, -9999)
+
+		if _los_reacting:
+			_los_react_timer -= delta
+			if _los_react_timer <= 0.0:
+				_los_reacting = false
+				_target_speed = SPEED_HUNT if _is_hunting else SPEED_FAST
+		else:
+			_target_speed = SPEED_HUNT if _is_hunting else SPEED_FAST
+			if _is_hunting:
+				_move_mode = MoveMode.HUNT
 	else:
-		push_error("[EntityManager] Could not load sample_sound.ogg")
+		if _move_mode == MoveMode.CHASE_LOS or _move_mode == MoveMode.HUNT:
+			_move_mode    = MoveMode.LAST_KNOWN
+			_target_speed = SPEED_SLOW
+			_path.clear()
+			_repath_timer = 0.0
+		elif _move_mode == MoveMode.LAST_KNOWN:
+			if _entity_pos.distance_to(_last_known_player) < MIN_PATH_DISTANCE * 2.0:
+				_move_mode    = MoveMode.WANDER
+				_target_speed = SPEED_SLOW
+				_path.clear()
+				_repath_timer = 0.0
+
+	_current_speed = lerpf(_current_speed, _target_speed, delta * 4.0)
+
+	# ── Stuck detection ───────────────────────────────────────
+
+	var movement := (_entity_pos - _last_position).length()
+	if movement < STUCK_MOVE_MIN and not _path.is_empty():
+		_stuck_timer += delta
+		if _stuck_timer >= STUCK_THRESHOLD:
+			_stuck_timer = 0.0
+			_stuck_repath_count += 1
+			if _stuck_repath_count >= MAX_STUCK_REPATHS:
+				print("[EntityManager] Max stuck repaths — despawning.")
+				_do_despawn()
+				return
+			print("[EntityManager] Stuck! Force-repath #%d" % _stuck_repath_count)
+			_path.clear()
+			_repath_timer = 0.0
+			_last_path_target = Vector2i(-9999, -9999)
+	else:
+		if movement > STUCK_MOVE_MIN:
+			_stuck_timer        = 0.0
+			_stuck_repath_count = 0
+		_last_position = _entity_pos
+
+	# ── Pathfinding tick ──────────────────────────────────────
+
+	if _step_timer <= 0.0:
+		_step_timer = STEP_INTERVAL
+		_tick_pathfinding(player_tile_center)
+
+	# ── Movement ─────────────────────────────────────────────
+
+	_move_entity(delta)
+	_entity_node.global_position = _entity_pos
+
+# ─────────────────────────────────────────────────────────────
+# PATHFINDING TICK
+# ─────────────────────────────────────────────────────────────
+
+func _tick_pathfinding(player_pos: Vector3) -> void:
+	var target_pos : Vector3
+
+	match _move_mode:
+		MoveMode.HUNT, MoveMode.CHASE_LOS:
+			target_pos = player_pos
+
+		MoveMode.LAST_KNOWN:
+			target_pos = _last_known_player
+
+		MoveMode.WANDER:
+			_wander_timer -= STEP_INTERVAL
+			if _wander_timer <= 0.0 or _path.is_empty():
+				_wander_timer     = WANDER_RETARGET_TIME
+				target_pos        = _pick_wander_target()
+				_repath_timer     = 0.0
+				_last_path_target = Vector2i(-9999, -9999)
+			else:
+				return  # still navigating to existing wander target
+		_:
+			return
+
+	var target_tile := Vector2i(floori(target_pos.x), floori(target_pos.z))
+	if _should_repath(target_tile):
+		_do_repath(target_pos, _move_mode)
+
+# ─────────────────────────────────────────────────────────────
+# WANDER TARGET
+# ─────────────────────────────────────────────────────────────
+
+func _pick_wander_target() -> Vector3:
+	if not chunk_manager:
+		return _entity_pos
+	for _attempt in range(12):
+		var angle : float = randf() * TAU
+		var dist  : float = randf_range(5.0, 14.0)
+		var tx    : int   = floori(_entity_pos.x + cos(angle) * dist)
+		var tz    : int   = floori(_entity_pos.z + sin(angle) * dist)
+		if _is_tile_walkable(tx, tz):
+			return _get_tile_center(Vector3(tx, _entity_pos.y, tz))
+	return _entity_pos
+
+# ─────────────────────────────────────────────────────────────
+# MOVEMENT EXECUTION
+# ─────────────────────────────────────────────────────────────
+
+func _move_entity(delta: float) -> void:
+	if _path.is_empty():
 		return
-	_audio_stream_player.max_distance = SOUND_MAX_DISTANCE
-	_audio_stream_player.max_db       = 0.0
-	_audio_stream_player.unit_size    = 1.0
-	_audio_stream_player.autoplay     = false
-	_audio_stream_player.finished.connect(_on_sound_finished)
-	_entity_node.add_child(_audio_stream_player)
-	_is_sound_playing = true
+	if _current_target_index >= _path.size():
+		_path.clear()
+		_current_target_index = 0
+		return
 
-	_sight_sound_player = AudioStreamPlayer3D.new()
-	_sight_sound_player.name = "SightSound"
-	_sight_sound_player.max_distance = SOUND_MAX_DISTANCE
-	_sight_sound_player.max_db       = 0.0
-	_sight_sound_player.unit_size    = 1.0
-	_sight_sound_player.autoplay     = false
-	_entity_node.add_child(_sight_sound_player)
+	var target : Vector3 = _path[_current_target_index]
+	var diff   : Vector3 = target - _entity_pos
+	diff.y = 0.0
+	var dist : float = diff.length()
 
-	_spawn_sound_player = AudioStreamPlayer3D.new()
-	_spawn_sound_player.name         = "SpawnSound"
-	_spawn_sound_player.max_distance = 200.0
-	_spawn_sound_player.unit_size    = 0.3
-	_spawn_sound_player.volume_db    = SPAWN_SOUND_VOLUME_DB
-	_spawn_sound_player.autoplay     = false
-	var spawn_stream = load("res://Sounds/Sweeper/spawn.wav")
-	if spawn_stream:
-		_spawn_sound_player.stream = spawn_stream
-	_entity_node.add_child(_spawn_sound_player)
+	# Staleness: waypoint became non-walkable — force immediate repath
+	if not _is_tile_walkable(floori(target.x), floori(target.z)):
+		_path.clear()
+		_current_target_index = 0
+		_repath_timer = 0.0
+		return
 
-	call_deferred("_play_sound_deferred")
+	if dist < MIN_PATH_DISTANCE:
+		_entity_pos           = target
+		_current_target_index += 1
+		return
 
-func _play_sound_deferred() -> void:
-	if _audio_stream_player and is_instance_valid(_audio_stream_player) and _is_sound_playing:
-		_audio_stream_player.play()
-	if _spawn_sound_player and is_instance_valid(_spawn_sound_player):
-		_spawn_sound_player.play()
-		print("[EntityManager] Spawn sound playing (very distant).")
+	var move_dist : float = _current_speed * delta
+	var move_dir          = diff.normalized()
 
-func _on_sound_finished() -> void:
-	if _audio_stream_player and is_instance_valid(_audio_stream_player) and _is_sound_playing:
-		_audio_stream_player.play()
+	if move_dist >= dist:
+		_entity_pos           = target
+		_current_target_index += 1
+	else:
+		_entity_pos += move_dir * move_dist
 
-func _load_sight_sound() -> void:
+	_entity_pos.y = ENTITY_HEIGHT
+
+	if is_instance_valid(_entity_node) and _entity_node is CharacterBody3D:
+		_entity_node.velocity   = move_dir * _current_speed
+		_entity_node.velocity.y = 0.0
+		_entity_node.move_and_slide()
+
+# ─────────────────────────────────────────────────────────────
+# LINE OF SIGHT
+# ─────────────────────────────────────────────────────────────
+
+func _check_line_of_sight(target: Vector3) -> bool:
+	if not chunk_manager or not player:
+		return false
+	var dist : float = _entity_pos.distance_to(target)
+	if dist > LOS_MAX_DIST:
+		return false
+	var ax := floori(_entity_pos.x); var az := floori(_entity_pos.z)
+	var bx := floori(target.x);      var bz := floori(target.z)
+	var dx := absi(bx - ax); var dz := absi(bz - az)
+	var sx := 1 if ax < bx else -1; var sz := 1 if az < bz else -1
+	var err := dx - dz
+	var steps := dx + dz + 2
+	for _i in range(steps):
+		if not (ax == floori(_entity_pos.x) and az == floori(_entity_pos.z)):
+			var cell := chunk_manager.get_map_cell(ax, az)
+			if cell["state"] == "hidden":
+				return false
+		if ax == bx and az == bz: break
+		var e2 := err * 2
+		if e2 > -dz: err -= dz; ax += sx
+		if e2 <  dx: err += dx; az += sz
+	return true
+
+func _play_sight_sound() -> void:
 	if not _sight_sound_player:
 		return
-	var sight_stream = load("res://Sounds/Sweeper/seen.wav")
-	if sight_stream:
-		_sight_sound_player.stream = sight_stream
-	else:
-		_sight_sound_player.stream = _audio_stream_player.stream if _audio_stream_player else null
-
-func _update_sound(delta: float) -> void:
-	if not _audio_stream_player or not player:
+	var t : float = Time.get_ticks_msec() / 1000.0
+	if t - _last_sight_sound_time < SIGHT_SOUND_COOLDOWN:
 		return
-	_sound_update_timer += delta
-	if _sound_update_timer >= SOUND_UPDATE_INTERVAL:
-		_sound_update_timer = 0.0
-		if _audio_stream_player:
-			var speed_factor = clamp(_current_speed / SPEED_FAST, 0.8, 1.5)
-			_audio_stream_player.pitch_scale = lerp(_audio_stream_player.pitch_scale, speed_factor, 0.1)
-
-func _stop_sound() -> void:
-	if _audio_stream_player and _is_sound_playing:
-		_audio_stream_player.stop()
-		_is_sound_playing = false
-		if _audio_stream_player.finished.is_connected(_on_sound_finished):
-			_audio_stream_player.finished.disconnect(_on_sound_finished)
-	if _sight_sound_player:
-		_sight_sound_player.stop()
-	if _spawn_sound_player:
-		_spawn_sound_player.stop()
+	_last_sight_sound_time = t
+	if not _sight_sound_player.stream:
+		_load_sight_sound()
+	_sight_sound_player.play()
+	print("[EntityManager] 👁️ Enemy spotted player!")
 
 # ─────────────────────────────────────────────────────────────
-# JUMPSCARE
+# UTILITIES
 # ─────────────────────────────────────────────────────────────
 
-func trigger_jumpscare() -> void:
-	if _state == State.JUMPSCARE or _state == State.JUMPSCARE_DESPAWN:
-		return
-
-	_state = State.JUMPSCARE
-	_stop_sound()
-	_despawn_timer = -999.0
-
-	if is_instance_valid(_entity_node):
-		_entity_node.global_position = _entity_pos
-
-	if player and is_instance_valid(_entity_node):
-		_face_player_toward_entity()
-
-	_jumpscare_player = AudioStreamPlayer.new()
-	_jumpscare_player.name      = "JumpscareSound"
-	_jumpscare_player.volume_db = JUMPSCARE_VOLUME_DB
-	var js_stream = load("res://Sounds/Sweeper/jumpscare.wav")
-	if js_stream:
-		_jumpscare_player.stream = js_stream
-	add_child(_jumpscare_player)
-	_jumpscare_player.play()
-	_jumpscare_player.finished.connect(_on_jumpscare_finished)
-
-	if js_stream:
-		_jumpscare_timer = js_stream.get_length() + 0.5
-	else:
-		_jumpscare_timer = 3.0
-	print("[EntityManager] Jumpscare triggered!")
-
-func _face_player_toward_entity() -> void:
-	if not player or not is_instance_valid(_entity_node):
-		return
-
-	# Calculate direction to entity
-	var dir : Vector3 = (_entity_pos - player.global_position)
-	dir.y = 0.0
-	if dir.length_squared() < 0.001:
-		return
-	
-	var target_yaw := atan2(dir.x, dir.z)
-	var target_yaw_deg := rad_to_deg(target_yaw)
-	
-	# Method 1: Use force_look_at if available (cleanest)
-	if player.has_method("force_look_at"):
-		player.force_look_at(_entity_pos)
-		return
-	
-	# Method 2: Direct property manipulation (fallback)
-	if "_rotation_y" in player:
-		player._rotation_y = target_yaw_deg
-		player.rotation_degrees.y = player._rotation_y
-		
-		# Level out camera pitch for jumpscare
-		if "_rotation_x" in player:
-			player._rotation_x = 0.0
-		
-		var cam : Camera3D = player.get_node_or_null("Camera3D")
-		if cam:
-			cam.rotation_degrees.x = 0.0
-		return
-	
-	# Method 3: Transform manipulation (last resort)
-	var look_transform := Transform3D.IDENTITY
-	look_transform = look_transform.looking_at(dir.normalized(), Vector3.UP)
-	player.global_transform.basis = look_transform.basis
-
-func _tick_jumpscare(delta: float) -> void:
-	if is_instance_valid(_entity_node) and player:
-		var dir : Vector3 = (player.global_position - _entity_pos)
-		dir.y = 0.0
-		if dir.length_squared() > 0.001:
-			var angle := atan2(dir.x, dir.z)
-			_current_rotation = lerp_angle(_current_rotation, angle, 20.0 * delta)
-			_entity_node.rotation.y = _current_rotation
-
-	_jumpscare_timer -= delta
-	if _jumpscare_timer <= 0.0:
-		_on_jumpscare_finished()
-
-func _on_jumpscare_finished() -> void:
-	if is_instance_valid(_jumpscare_player):
-		if _jumpscare_player.finished.is_connected(_on_jumpscare_finished):
-			_jumpscare_player.finished.disconnect(_on_jumpscare_finished)
-		_jumpscare_player.queue_free()
-		_jumpscare_player = null
-
-	_jumpscare_timer = -999.0
-	_state = State.JUMPSCARE_DESPAWN
-
-	if is_instance_valid(_entity_node):
-		_entity_node.queue_free()
-		_entity_node = null
-
-	emit_signal("jumpscare_finished")
-	print("[EntityManager] Jumpscare finished — signalling game over.")
-	
-	_state = State.WAITING_FOR_ACTIVE
-	_skip_active_wait = true
-	_respawn_timer = 0.0
-
-# ─────────────────────────────────────────────────────────────
-# ANIMATION
-# ─────────────────────────────────────────────────────────────
-
-func _setup_animation() -> void:
-	if not _entity_node:
-		return
-	_animation_player = _entity_node.find_child("AnimationPlayer", true, false)
-	if _animation_player:
-		_play_animation("idle")
-
-func _play_animation(anim_name: String, speed: float = 1.0) -> void:
-	if not _animation_player:
-		return
-	if _current_anim == anim_name:
-		return
-	if _animation_player.has_animation(anim_name):
-		_current_anim = anim_name
-		_animation_player.play(anim_name, -1, speed)
-	else:
-		var alt_names = {
-			"idle": ["idle", "Idle", "IDLE", "standing", "Standing"],
-			"walk": ["walk", "Walk", "WALK", "walking", "Walking", "run", "Run"]
-		}
-		for alt in alt_names.get(anim_name, []):
-			if _animation_player.has_animation(alt):
-				_current_anim = alt
-				_animation_player.play(alt, -1, speed)
-				return
-
-func _update_animation(delta: float) -> void:
-	if not _animation_player:
-		return
-	var is_moving = _current_speed > 0.5 and not _path.is_empty()
-	if is_moving:
-		var anim_speed = (_current_speed / SPEED_SLOW) * 1.5
-		anim_speed = clamp(anim_speed, 0.5, 2.0)
-		_play_animation("walk", anim_speed)
-	else:
-		_play_animation("idle")
-
-# ─────────────────────────────────────────────────────────────
-# ROTATION
-# ─────────────────────────────────────────────────────────────
-
-func _rotate_towards_player(delta: float) -> void:
-	if not player or not _entity_node:
-		return
-	var direction = (player.global_position - _entity_pos).normalized()
-	var target_angle = atan2(direction.x, direction.z)
-	# Faster rotation in hunt mode
-	var rotation_speed = ROTATION_SPEED * (2.0 if _is_hunting else 1.0)
-	_current_rotation = lerp_angle(_current_rotation, target_angle, rotation_speed * delta)
-	_entity_node.rotation.y = _current_rotation
-
-# ─────────────────────────────────────────────────────────────
-# SIGNAL HANDLER
-# ─────────────────────────────────────────────────────────────
-
-func _on_world_ready() -> void:
-	_state = State.WAITING_FOR_ACTIVE
-
-# ─────────────────────────────────────────────────────────────
-# PLAYER ACTIVITY DETECTION
-# ─────────────────────────────────────────────────────────────
+func _get_tile_center(pos: Vector3) -> Vector3:
+	return Vector3(floori(pos.x) + 0.5, pos.y, floori(pos.z) + 0.5)
 
 func _is_player_active() -> bool:
-	if not player:
-		return false
+	if not player: return false
 	var moved   : bool = player.global_position.distance_to(_prev_player_pos) > 0.05
 	var rotated : bool = not player.global_transform.basis.is_equal_approx(_prev_player_basis)
 	_prev_player_pos   = player.global_position
@@ -580,34 +736,26 @@ func _is_player_active() -> bool:
 	return moved or rotated
 
 # ─────────────────────────────────────────────────────────────
-# SPAWN DELAY
+# SPAWN
 # ─────────────────────────────────────────────────────────────
 
 func _begin_spawn_delay() -> void:
 	_spawn_timer = randf_range(SPAWN_DELAY_MIN, SPAWN_DELAY_MAX)
 	_state       = State.SPAWN_DELAY
 
-# ─────────────────────────────────────────────────────────────
-# SPAWN ATTEMPT
-# ─────────────────────────────────────────────────────────────
-
 func _try_spawn() -> void:
 	if not chunk_manager or not player:
 		return
-
 	var spawn_tile : Vector2i = _find_spawn_tile()
 	if spawn_tile == Vector2i(-9999, -9999):
 		_spawn_timer = 3.0
 		return
 
-	var world_x : float = spawn_tile.x + 0.5
-	var world_z : float = spawn_tile.y + 0.5
-
 	if is_instance_valid(_entity_node):
 		_entity_node.queue_free()
 		_entity_node = null
 
-	_entity_pos  = Vector3(world_x, ENTITY_HEIGHT, world_z)
+	_entity_pos  = Vector3(spawn_tile.x + 0.5, ENTITY_HEIGHT, spawn_tile.y + 0.5)
 	_entity_node = _build_entity_visual()
 	add_child(_entity_node)
 	_entity_node.global_position = _entity_pos
@@ -621,430 +769,51 @@ func _try_spawn() -> void:
 	_current_speed        = SPEED_SLOW
 	_target_speed         = SPEED_SLOW
 	_despawn_timer        = DESPAWN_TIMEOUT
+	_repath_timer         = 0.0
 	_wander_timer         = 0.0
+	_step_timer           = 0.0
 	_los_react_timer      = 0.0
 	_los_reacting         = false
 	_last_known_player    = _get_tile_center(player.global_position)
 	_move_mode            = MoveMode.WANDER
 	_path.clear()
 	_current_target_index = 0
+	_last_path_target     = Vector2i(-9999, -9999)
 	_last_position        = _entity_pos
 	_stuck_timer          = 0.0
-	_path_refresh_count   = 0
-	_sound_update_timer   = 0.0
-	_bfs_cooldown         = 0.0
+	_stuck_repath_count   = 0
 	_invalidate_cache()
 
 	_state = State.ALIVE
-	print("[EntityManager] Entity spawned at ", _entity_pos)
-
-func _get_tile_center(pos: Vector3) -> Vector3:
-	return Vector3(floori(pos.x) + 0.5, pos.y, floori(pos.z) + 0.5)
+	print("[EntityManager] Entity spawned at tile ", spawn_tile)
 
 func _find_spawn_tile() -> Vector2i:
 	if not chunk_manager or not player:
 		return Vector2i(-9999, -9999)
-
-	var pp : Vector3 = player.global_position
-	var px : int     = floori(pp.x)
-	var pz : int     = floori(pp.z)
-	var cs : int     = chunk_manager.CHUNK_SIZE
-	var rr : int     = chunk_manager.RENDER_RADIUS * cs
-
+	var pp  : Vector3 = player.global_position
+	var px  : int     = floori(pp.x)
+	var pz  : int     = floori(pp.z)
+	var rr  : int     = chunk_manager.RENDER_RADIUS * chunk_manager.CHUNK_SIZE
 	var candidates : Array[Vector2i] = []
-	
 	for wx in range(px - rr, px + rr + 1):
 		for wz in range(pz - rr, pz + rr + 1):
 			var dist : float = Vector2(wx - px, wz - pz).length()
-			if dist < SAFE_RADIUS:
-				continue
-			var cell : Dictionary = chunk_manager.get_map_cell(wx, wz)
-			if cell["state"] == "revealed":
-				var has_space := true
-				for dx in range(-1, 2):
-					for dz in range(-1, 2):
-						var check_cell := chunk_manager.get_map_cell(wx + dx, wz + dz)
-						if check_cell["state"] == "hidden" or check_cell["state"] == "mine":
-							has_space = false
-							break
-					if not has_space:
-						break
-				if has_space and _is_tile_wide_enough_cached(wx, wz):
-					candidates.append(Vector2i(wx, wz))
-
+			if dist < SAFE_RADIUS: continue
+			if not _is_tile_walkable(wx, wz): continue
+			var ok := true
+			for ddx in [-1, 0, 1]:
+				for ddz in [-1, 0, 1]:
+					if ddx == 0 and ddz == 0: continue
+					if not _is_tile_walkable(wx + ddx, wz + ddz):
+						ok = false; break
+				if not ok: break
+			if ok: candidates.append(Vector2i(wx, wz))
 	if candidates.is_empty():
 		return Vector2i(-9999, -9999)
-
 	candidates.sort_custom(func(a, b):
-		var da := Vector2(a.x - px, a.y - pz).length_squared()
-		var db := Vector2(b.x - px, b.y - pz).length_squared()
-		return da > db)
-
-	var pool_size : int = maxi(1, candidates.size() / 4)
-	return candidates[randi() % pool_size]
-
-func force_hunt_player() -> void:
-	"""Force the enemy to hunt the player aggressively (called when all stars collected)"""
-	_is_hunting = true
-	if _state == State.ALIVE:
-		_move_mode = MoveMode.HUNT
-		_target_speed = SPEED_HUNT
-		_path.clear()
-		print("[EntityManager] HUNT MODE ACTIVATED!")
-
-# ─────────────────────────────────────────────────────────────
-# ALIVE UPDATE
-# ─────────────────────────────────────────────────────────────
-
-func _update_alive(delta: float) -> void:
-	if not is_instance_valid(_entity_node):
-		_state = State.WAITING_FOR_ACTIVE
-		return
-
-	# DESPAWN TIMER - ONLY DECREMENTED ONCE
-	_despawn_timer -= delta
-	if _despawn_timer <= 0.0:
-		_do_despawn()
-		return
-
-	var player_pos : Vector3 = _get_tile_center(player.global_position if player else Vector3.ZERO)
-	
-	# In hunt mode, always have line of sight for pathfinding purposes
-	var has_los : bool = false
-	if _is_hunting:
-		has_los = true  # Always chase in hunt mode
-	else:
-		has_los = _check_line_of_sight(player_pos)
-
-	# Update movement mode based on line of sight and hunt status
-	if has_los or _is_hunting:
-		_last_known_player = player_pos
-		_despawn_timer = DESPAWN_TIMEOUT
-
-		# Transition to appropriate chase mode
-		if _move_mode != MoveMode.CHASE_LOS and _move_mode != MoveMode.HUNT:
-			_play_sight_sound()
-			_move_mode = MoveMode.HUNT if _is_hunting else MoveMode.CHASE_LOS
-			_los_react_timer = randf_range(LOS_REACT_MIN, LOS_REACT_MAX) if not _is_hunting else 0.0
-			_los_reacting = true
-			_current_speed = SPEED_SLOW
-			_path.clear()
-			_current_target_index = 0
-			_path_refresh_count = 0
-
-		# Handle reaction delay (only for non-hunt mode)
-		if _los_reacting and not _is_hunting:
-			_los_react_timer -= delta
-			if _los_react_timer <= 0.0:
-				_los_reacting = false
-				_target_speed = SPEED_FAST
-		elif _is_hunting:
-			# In hunt mode, instantly go to full speed and stop reacting
-			_los_reacting = false
-			_target_speed = SPEED_HUNT
-	else:
-		# No line of sight and not hunting - fallback to last known or wander
-		if _move_mode == MoveMode.CHASE_LOS:
-			_move_mode = MoveMode.LAST_KNOWN
-			_target_speed = SPEED_SLOW
-			_path.clear()
-			_current_target_index = 0
-		elif _move_mode == MoveMode.LAST_KNOWN:
-			var dist_to_last_known = _entity_pos.distance_to(_last_known_player)
-			if dist_to_last_known < MIN_PATH_DISTANCE:
-				_move_mode = MoveMode.WANDER
-				_target_speed = SPEED_SLOW
-				_path.clear()
-				_current_target_index = 0
-		elif _move_mode == MoveMode.HUNT:
-			# Should never happen, but fallback to chase if hunt mode loses target
-			_move_mode = MoveMode.CHASE_LOS
-			_target_speed = SPEED_FAST
-
-	# Smoothly interpolate current speed to target speed
-	_current_speed = lerpf(_current_speed, _target_speed, delta * 3.0)
-
-	# Stuck detection - prevent enemy from getting permanently stuck on geometry
-	var movement := (_entity_pos - _last_position).length()
-	if movement < 0.05:
-		_stuck_timer += delta
-		if _stuck_timer > STUCK_THRESHOLD:
-			_stuck_timer = 0.0
-			_path_refresh_count += 1
-			_path.clear()
-			_current_target_index = 0
-			print("[EntityManager] Stuck detected, forcing repath #", _path_refresh_count)
-			
-			# If stuck too many times, despawn and respawn later
-			if _path_refresh_count >= 100:
-				print("[EntityManager] Repath limit reached — despawning")
-				_do_despawn()
-				_state = State.WAITING_FOR_ACTIVE
-				_skip_active_wait = true
-				_respawn_timer = 0.0
-				_path_refresh_count = 0
-				return
-	else:
-		_stuck_timer = 0.0
-		_last_position = _entity_pos
-
-	# Pathfinding logic tick
-	_step_timer -= delta
-	if _step_timer <= 0.0:
-		_step_timer = STEP_INTERVAL
-		_advance_path(player_pos)
-
-	# Execute movement
-	_move_entity(delta)
-	_entity_node.global_position = _entity_pos
-
-# ─────────────────────────────────────────────────────────────
-# LINE OF SIGHT
-# ─────────────────────────────────────────────────────────────
-
-func _play_sight_sound() -> void:
-	if not _sight_sound_player:
-		return
-	var current_time = Time.get_ticks_msec() / 1000.0
-	if current_time - _last_sight_sound_time < SIGHT_SOUND_COOLDOWN:
-		return
-	_last_sight_sound_time = current_time
-	if not _sight_sound_player.stream:
-		_load_sight_sound()
-	_sight_sound_player.play()
-	print("[EntityManager] 👁️ Enemy spotted player!")
-
-func _check_line_of_sight(target: Vector3) -> bool:
-	if not chunk_manager or not player:
-		return false
-	var dist : float = _entity_pos.distance_to(target)
-	if dist > LOS_MAX_DIST:
-		return false
-	var steps : int    = int(dist) + 1
-	var dir   : Vector3 = (target - _entity_pos).normalized()
-	for i in range(1, steps):
-		var sample : Vector3 = _entity_pos + dir * float(i)
-		var wx     : int     = floori(sample.x)
-		var wz     : int     = floori(sample.z)
-		var chunk_pos = Vector2i(floori(float(wx) / chunk_manager.CHUNK_SIZE), floori(float(wz) / chunk_manager.CHUNK_SIZE))
-		if not chunk_manager.chunks.has(chunk_pos):
-			return false
-		var cell : Dictionary = chunk_manager.get_map_cell(wx, wz)
-		if cell["state"] == "hidden":
-			return false
-	return true
-
-# ─────────────────────────────────────────────────────────────
-# PATHFINDING (Optimized)
-# ─────────────────────────────────────────────────────────────
-
-func _advance_path(player_pos: Vector3) -> void:
-	# Throttle BFS calls based on movement mode
-	if _bfs_cooldown > 0:
-		_bfs_cooldown -= STEP_INTERVAL
-		return
-	
-	var target_pos : Vector3
-	var bfs_delay : float = BFS_COOLDOWN_WANDER
-	
-	match _move_mode:
-		MoveMode.HUNT:
-			target_pos = player_pos
-			bfs_delay = BFS_COOLDOWN_HUNT
-		MoveMode.CHASE_LOS:
-			target_pos = player_pos
-			bfs_delay = BFS_COOLDOWN_CHASE
-		MoveMode.LAST_KNOWN:
-			target_pos = _last_known_player
-			bfs_delay = BFS_COOLDOWN_LAST_KNOWN
-		MoveMode.WANDER:
-			_wander_timer -= STEP_INTERVAL
-			if _wander_timer <= 0.0 or _path.is_empty():
-				_wander_timer = WANDER_RETARGET_TIME
-				target_pos    = _random_wander_target()
-				bfs_delay = BFS_COOLDOWN_WANDER
-			else:
-				return
-
-	target_pos = _get_tile_center(target_pos)
-	var current_tile = Vector2i(floori(_entity_pos.x), floori(_entity_pos.z))
-	var target_tile  = Vector2i(floori(target_pos.x),  floori(target_pos.z))
-
-	# Only recalculate if target changed significantly
-	if _path.is_empty() or _current_target_index >= _path.size() or current_tile.distance_squared_to(target_tile) > 4:
-		_bfs_cooldown = bfs_delay
-		
-		if _move_mode == MoveMode.HUNT:
-			# In hunt mode, always take the most direct path
-			_path = _bfs_path(_entity_pos, target_pos, false)
-		elif _move_mode == MoveMode.CHASE_LOS and randf() < RANDOM_PATH_BIAS:
-			_path = _bfs_path_randomized(_entity_pos, target_pos)
-		else:
-			_path = _bfs_path(_entity_pos, target_pos, _move_mode == MoveMode.WANDER)
-		_current_target_index = 0
-		for i in range(_path.size()):
-			_path[i] = _get_tile_center(_path[i])
-			
-func _random_wander_target() -> Vector3:
-	if not chunk_manager:
-		return _entity_pos
-	var angle : float = randf() * TAU
-	var dist  : float = randf_range(4.0, 10.0)
-	var tx    : float = _entity_pos.x + cos(angle) * dist
-	var tz    : float = _entity_pos.z + sin(angle) * dist
-	return _get_tile_center(Vector3(tx, _entity_pos.y, tz))
-
-func _bfs_path_randomized(from: Vector3, to: Vector3) -> Array[Vector3]:
-	if not chunk_manager:
-		return []
-	var start : Vector2i = Vector2i(floori(from.x), floori(from.z))
-	var goal  : Vector2i = Vector2i(floori(to.x),   floori(to.z))
-	if start == goal:
-		return []
-	
-	var visited : Dictionary = {}
-	var parent  : Dictionary = {}
-	var queue   : Array[Vector2i] = [start]
-	visited[start] = true
-	
-	var dirs : Array[Vector2i] = [
-		Vector2i(1,0), Vector2i(-1,0), Vector2i(0,1), Vector2i(0,-1),
-		Vector2i(1,1), Vector2i(1,-1), Vector2i(-1,1), Vector2i(-1,-1),
-	]
-	var found : bool = false
-	
-	while not queue.is_empty() and visited.size() < BFS_MAX_STEPS:
-		var cur : Vector2i = queue.pop_front()
-		if cur == goal:
-			found = true
-			break
-		var neighbours := dirs.duplicate()
-		neighbours.shuffle()
-		for d in neighbours:
-			var nb : Vector2i = cur + d
-			if visited.has(nb):
-				continue
-			if not _is_tile_walkable_cached(nb.x, nb.y):
-				continue
-			if not _is_diagonal_passable_cached(cur.x, cur.y, nb.x, nb.y):
-				continue
-			visited[nb] = true
-			parent[nb]  = cur
-			queue.append(nb)
-	
-	if not found:
-		return []
-	
-	var path_tiles : Array[Vector2i] = []
-	var step       : Vector2i        = goal
-	while parent.has(step):
-		path_tiles.push_front(step)
-		step = parent[step]
-	
-	var path_world : Array[Vector3] = []
-	for t in path_tiles:
-		path_world.append(Vector3(t.x + 0.5, _entity_pos.y, t.y + 0.5))
-	return path_world
-
-func _bfs_path(from: Vector3, to: Vector3, shuffle_neighbours: bool) -> Array[Vector3]:
-	if not chunk_manager:
-		return []
-	var start : Vector2i = Vector2i(floori(from.x), floori(from.z))
-	var goal  : Vector2i = Vector2i(floori(to.x),   floori(to.z))
-	if start == goal:
-		return []
-	
-	var visited : Dictionary = {}
-	var parent  : Dictionary = {}
-	var queue   : Array[Vector2i] = [start]
-	visited[start] = true
-	
-	var dirs : Array[Vector2i] = [
-		Vector2i(1,0), Vector2i(-1,0), Vector2i(0,1), Vector2i(0,-1),
-		Vector2i(1,1), Vector2i(1,-1), Vector2i(-1,1), Vector2i(-1,-1),
-	]
-	var found : bool = false
-	
-	while not queue.is_empty() and visited.size() < BFS_MAX_STEPS:
-		var cur : Vector2i = queue.pop_front()
-		if cur == goal:
-			found = true
-			break
-		var neighbours := dirs.duplicate()
-		if shuffle_neighbours:
-			neighbours.shuffle()
-		for d in neighbours:
-			var nb : Vector2i = cur + d
-			if visited.has(nb):
-				continue
-			if not _is_tile_walkable_cached(nb.x, nb.y):
-				continue
-			if not _is_diagonal_passable_cached(cur.x, cur.y, nb.x, nb.y):
-				continue
-			visited[nb] = true
-			parent[nb]  = cur
-			queue.append(nb)
-	
-	if not found:
-		return []
-	
-	var path_tiles : Array[Vector2i] = []
-	var step       : Vector2i        = goal
-	while parent.has(step):
-		path_tiles.push_front(step)
-		step = parent[step]
-	
-	var path_world : Array[Vector3] = []
-	for t in path_tiles:
-		path_world.append(Vector3(t.x + 0.5, _entity_pos.y, t.y + 0.5))
-	return path_world
-
-# ─────────────────────────────────────────────────────────────
-# MOVEMENT
-# ─────────────────────────────────────────────────────────────
-
-func _move_entity(delta: float) -> void:
-	if _path.is_empty():
-		return
-	if _current_target_index >= _path.size():
-		_path.clear()
-		_current_target_index = 0
-		return
-	
-	var target   : Vector3 = _path[_current_target_index]
-	var diff     : Vector3 = target - _entity_pos
-	diff.y = 0.0
-	var dist     : float   = diff.length()
-	
-	if dist < MIN_PATH_DISTANCE:
-		_entity_pos = target
-		_current_target_index += 1
-		return
-	
-	var target_tile := Vector2i(floori(target.x), floori(target.z))
-	if not _is_tile_walkable_cached(target_tile.x, target_tile.y):
-		_path.clear()
-		_current_target_index = 0
-		return
-	
-	var move_dist : float = _current_speed * delta
-	var move_dir          = diff.normalized()
-	
-	if move_dist >= dist:
-		_entity_pos = target
-		_current_target_index += 1
-	else:
-		_entity_pos += move_dir * move_dist
-	
-	_entity_pos.y = ENTITY_HEIGHT
-	
-	if _entity_node is CharacterBody3D:
-		var velocity_vec      = move_dir * _current_speed
-		velocity_vec.y        = 0
-		_entity_node.velocity = velocity_vec
-		_entity_node.move_and_slide()
-	else:
-		_entity_node.global_position = _entity_pos
+		return Vector2(a.x - px, a.y - pz).length_squared() > Vector2(b.x - px, b.y - pz).length_squared())
+	var pool : int = maxi(1, candidates.size() / 4)
+	return candidates[randi() % pool]
 
 # ─────────────────────────────────────────────────────────────
 # DESPAWN
@@ -1056,70 +825,225 @@ func _do_despawn() -> void:
 	if is_instance_valid(_entity_node):
 		_entity_node.queue_free()
 		_entity_node = null
-	_state         = State.DESPAWNED
-	_respawn_timer = RESPAWN_AFTER_DESPAWN
+	_state              = State.DESPAWNED
+	_respawn_timer      = RESPAWN_AFTER_DESPAWN
 	_path.clear()
 	_current_target_index = 0
-	_path_refresh_count   = 0
+	_stuck_repath_count   = 0
 	_stuck_timer          = 0.0
 	_invalidate_cache()
+
+# ─────────────────────────────────────────────────────────────
+# HUNT MODE
+# ─────────────────────────────────────────────────────────────
+
+func force_hunt_player() -> void:
+	_is_hunting = true
+	if _state == State.ALIVE:
+		_move_mode    = MoveMode.HUNT
+		_target_speed = SPEED_HUNT
+		_path.clear()
+		_repath_timer = 0.0
+		print("[EntityManager] HUNT MODE ACTIVATED!")
+
+# ─────────────────────────────────────────────────────────────
+# ANIMATION
+# ─────────────────────────────────────────────────────────────
+
+func _setup_animation() -> void:
+	if not _entity_node: return
+	_animation_player = _entity_node.find_child("AnimationPlayer", true, false)
+	if _animation_player: _play_animation("idle")
+
+func _play_animation(anim_name: String, speed: float = 1.0) -> void:
+	if not _animation_player: return
+	if _current_anim == anim_name: return
+	var alts := {
+		"idle": ["idle", "Idle", "IDLE", "standing", "Standing"],
+		"walk": ["walk", "Walk", "WALK", "walking", "Walking", "run", "Run"]
+	}
+	for alt in alts.get(anim_name, [anim_name]):
+		if _animation_player.has_animation(alt):
+			_current_anim = alt
+			_animation_player.play(alt, -1, speed)
+			return
+
+func _update_animation() -> void:
+	if not _animation_player: return
+	var moving := _current_speed > 0.5 and not _path.is_empty()
+	if moving: _play_animation("walk", clampf(_current_speed / SPEED_SLOW * 1.5, 0.5, 2.0))
+	else:      _play_animation("idle")
+
+func _setup_animation_fallback(entity: Node3D) -> void:
+	var ap   = AnimationPlayer.new(); ap.name = "AnimationPlayer"; entity.add_child(ap)
+	var idle = Animation.new(); idle.length = 1.0; idle.loop_mode = Animation.LOOP_LINEAR
+	var ti   = idle.add_track(Animation.TYPE_VALUE)
+	idle.track_set_path(ti, NodePath(":rotation:y"))
+	idle.track_insert_key(ti, 0.0, 0.0); idle.track_insert_key(ti, 0.5, 0.1); idle.track_insert_key(ti, 1.0, 0.0)
+	ap.add_animation("idle", idle)
+	var walk = Animation.new(); walk.length = 0.5; walk.loop_mode = Animation.LOOP_LINEAR
+	var tw   = walk.add_track(Animation.TYPE_VALUE)
+	walk.track_set_path(tw, NodePath(":rotation:y"))
+	walk.track_insert_key(tw, 0.0, -0.15); walk.track_insert_key(tw, 0.25, 0.15); walk.track_insert_key(tw, 0.5, -0.15)
+	ap.add_animation("walk", walk)
+
+# ─────────────────────────────────────────────────────────────
+# ROTATION
+# ─────────────────────────────────────────────────────────────
+
+func _rotate_towards_player(delta: float) -> void:
+	if not player or not _entity_node: return
+	var dir  := (player.global_position - _entity_pos).normalized()
+	var ang  := atan2(dir.x, dir.z)
+	var spd  := ROTATION_SPEED * (2.0 if _is_hunting else 1.0)
+	_current_rotation = lerp_angle(_current_rotation, ang, spd * delta)
+	_entity_node.rotation.y = _current_rotation
+
+# ─────────────────────────────────────────────────────────────
+# SOUND
+# ─────────────────────────────────────────────────────────────
+
+func _setup_sound() -> void:
+	if not _entity_node: return
+	_audio_stream_player = AudioStreamPlayer3D.new()
+	_audio_stream_player.name = "EntitySound"
+	var s = load("res://Sounds/Sweeper/sample_sound.ogg")
+	if s: _audio_stream_player.stream = s
+	else: push_error("[EntityManager] Could not load sample_sound.ogg"); return
+	_audio_stream_player.max_distance = SOUND_MAX_DISTANCE
+	_audio_stream_player.max_db = 0.0; _audio_stream_player.unit_size = 1.0
+	_audio_stream_player.autoplay = false
+	_audio_stream_player.finished.connect(_on_sound_finished)
+	_entity_node.add_child(_audio_stream_player)
+	_is_sound_playing = true
+
+	_sight_sound_player = AudioStreamPlayer3D.new()
+	_sight_sound_player.name = "SightSound"
+	_sight_sound_player.max_distance = SOUND_MAX_DISTANCE
+	_sight_sound_player.max_db = 0.0; _sight_sound_player.unit_size = 1.0
+	_sight_sound_player.autoplay = false
+	_entity_node.add_child(_sight_sound_player)
+
+	_spawn_sound_player = AudioStreamPlayer3D.new()
+	_spawn_sound_player.name = "SpawnSound"
+	_spawn_sound_player.max_distance = 200.0; _spawn_sound_player.unit_size = 0.3
+	_spawn_sound_player.volume_db = SPAWN_SOUND_VOLUME_DB; _spawn_sound_player.autoplay = false
+	var ss = load("res://Sounds/Sweeper/spawn.wav")
+	if ss: _spawn_sound_player.stream = ss
+	_entity_node.add_child(_spawn_sound_player)
+	call_deferred("_play_sound_deferred")
+
+func _play_sound_deferred() -> void:
+	if _audio_stream_player and is_instance_valid(_audio_stream_player) and _is_sound_playing:
+		_audio_stream_player.play()
+	if _spawn_sound_player and is_instance_valid(_spawn_sound_player):
+		_spawn_sound_player.play()
+
+func _on_sound_finished() -> void:
+	if _audio_stream_player and is_instance_valid(_audio_stream_player) and _is_sound_playing:
+		_audio_stream_player.play()
+
+func _load_sight_sound() -> void:
+	if not _sight_sound_player: return
+	var ss = load("res://Sounds/Sweeper/seen.wav")
+	if ss: _sight_sound_player.stream = ss
+	elif _audio_stream_player: _sight_sound_player.stream = _audio_stream_player.stream
+
+func _update_sound(delta: float) -> void:
+	if not _audio_stream_player or not player: return
+	_sound_update_timer += delta
+	if _sound_update_timer >= SOUND_UPDATE_INTERVAL:
+		_sound_update_timer = 0.0
+		var sf : float = clamp(_current_speed / SPEED_FAST, 0.8, 1.5)
+		_audio_stream_player.pitch_scale = lerp(_audio_stream_player.pitch_scale, sf, 0.1)
+
+func _stop_sound() -> void:
+	if _audio_stream_player and _is_sound_playing:
+		_audio_stream_player.stop(); _is_sound_playing = false
+		if _audio_stream_player.finished.is_connected(_on_sound_finished):
+			_audio_stream_player.finished.disconnect(_on_sound_finished)
+	if _sight_sound_player: _sight_sound_player.stop()
+	if _spawn_sound_player: _spawn_sound_player.stop()
+
+# ─────────────────────────────────────────────────────────────
+# JUMPSCARE
+# ─────────────────────────────────────────────────────────────
+
+func trigger_jumpscare() -> void:
+	if _state == State.JUMPSCARE or _state == State.JUMPSCARE_DESPAWN: return
+	_state = State.JUMPSCARE
+	_stop_sound()
+	_despawn_timer = -999.0
+	if is_instance_valid(_entity_node): _entity_node.global_position = _entity_pos
+	if player and is_instance_valid(_entity_node): _face_player_toward_entity()
+
+	_jumpscare_player = AudioStreamPlayer.new()
+	_jumpscare_player.name = "JumpscareSound"
+	_jumpscare_player.volume_db = JUMPSCARE_VOLUME_DB
+	var js = load("res://Sounds/Sweeper/jumpscare.wav")
+	if js: _jumpscare_player.stream = js
+	add_child(_jumpscare_player)
+	_jumpscare_player.play()
+	_jumpscare_player.finished.connect(_on_jumpscare_finished)
+	_jumpscare_timer = js.get_length() + 0.5 if js else 3.0
+	print("[EntityManager] Jumpscare triggered!")
+
+func _face_player_toward_entity() -> void:
+	if not player or not is_instance_valid(_entity_node): return
+	var dir := (_entity_pos - player.global_position); dir.y = 0.0
+	if dir.length_squared() < 0.001: return
+	if player.has_method("force_look_at"): player.force_look_at(_entity_pos); return
+	if "_rotation_y" in player:
+		player._rotation_y = rad_to_deg(atan2(dir.x, dir.z))
+		player.rotation_degrees.y = player._rotation_y
+		if "_rotation_x" in player: player._rotation_x = 0.0
+		var cam : Camera3D = player.get_node_or_null("Camera3D")
+		if cam: cam.rotation_degrees.x = 0.0
+
+func _tick_jumpscare(delta: float) -> void:
+	if is_instance_valid(_entity_node) and player:
+		var dir := (player.global_position - _entity_pos); dir.y = 0.0
+		if dir.length_squared() > 0.001:
+			_current_rotation = lerp_angle(_current_rotation, atan2(dir.x, dir.z), 20.0 * delta)
+			_entity_node.rotation.y = _current_rotation
+	_jumpscare_timer -= delta
+	if _jumpscare_timer <= 0.0: _on_jumpscare_finished()
+
+func _on_jumpscare_finished() -> void:
+	if is_instance_valid(_jumpscare_player):
+		if _jumpscare_player.finished.is_connected(_on_jumpscare_finished):
+			_jumpscare_player.finished.disconnect(_on_jumpscare_finished)
+		_jumpscare_player.queue_free(); _jumpscare_player = null
+	_jumpscare_timer = -999.0
+	_state = State.JUMPSCARE_DESPAWN
+	if is_instance_valid(_entity_node): _entity_node.queue_free(); _entity_node = null
+	emit_signal("jumpscare_finished")
+	print("[EntityManager] Jumpscare finished.")
+	_state = State.WAITING_FOR_ACTIVE
+	_skip_active_wait = true
+	_respawn_timer = 0.0
 
 # ─────────────────────────────────────────────────────────────
 # ENTITY VISUAL BUILDER
 # ─────────────────────────────────────────────────────────────
 
 func _build_entity_visual() -> Node3D:
-	var scene    = preload("res://Enemy/Sweeper/Sweeper.tscn")
-	var instance = scene.instantiate()
-	if not instance.find_child("CollisionShape3D", true, false):
-		_setup_collision(instance)
-	if not instance.find_child("AnimationPlayer", true, false):
-		_setup_animation_fallback(instance)
-	return instance
+	var scene = preload("res://Enemy/Sweeper/Sweeper.tscn")
+	var inst  = scene.instantiate()
+	if not inst.find_child("CollisionShape3D", true, false): _setup_collision(inst)
+	if not inst.find_child("AnimationPlayer",  true, false): _setup_animation_fallback(inst)
+	return inst
 
 func _setup_collision(entity: Node3D) -> void:
-	var body     = CharacterBody3D.new()
-	body.name    = "CollisionBody"
-	var children = entity.get_children()
-	for child in children:
-		entity.remove_child(child)
-		body.add_child(child)
-	var collision_shape  = CollisionShape3D.new()
-	var cylinder_shape   = CylinderShape3D.new()
-	cylinder_shape.height = COLLISION_HEIGHT
-	cylinder_shape.radius = COLLISION_RADIUS
-	collision_shape.shape = cylinder_shape
-	body.add_child(collision_shape)
-	body.collision_layer = 2
-	body.collision_mask  = 1
-	entity.add_child(body)
-	_collision_body = body
-
-func _setup_animation_fallback(entity: Node3D) -> void:
-	var anim_player      = AnimationPlayer.new()
-	anim_player.name     = "AnimationPlayer"
-	entity.add_child(anim_player)
-	var idle_anim        = Animation.new()
-	idle_anim.length     = 1.0
-	idle_anim.loop_mode  = Animation.LOOP_LINEAR
-	var track_idx        = idle_anim.add_track(Animation.TYPE_VALUE)
-	idle_anim.track_set_path(track_idx, NodePath(":rotation:y"))
-	idle_anim.track_insert_key(track_idx, 0.0, 0.0)
-	idle_anim.track_insert_key(track_idx, 0.5, 0.1)
-	idle_anim.track_insert_key(track_idx, 1.0, 0.0)
-	anim_player.add_animation("idle", idle_anim)
-	var walk_anim        = Animation.new()
-	walk_anim.length     = 0.5
-	walk_anim.loop_mode  = Animation.LOOP_LINEAR
-	track_idx            = walk_anim.add_track(Animation.TYPE_VALUE)
-	walk_anim.track_set_path(track_idx, NodePath(":rotation:y"))
-	walk_anim.track_insert_key(track_idx, 0.0, -0.15)
-	walk_anim.track_insert_key(track_idx, 0.25, 0.15)
-	walk_anim.track_insert_key(track_idx, 0.5, -0.15)
-	anim_player.add_animation("walk", walk_anim)
+	var body = CharacterBody3D.new(); body.name = "CollisionBody"
+	for child in entity.get_children(): entity.remove_child(child); body.add_child(child)
+	var col = CollisionShape3D.new(); var cyl = CylinderShape3D.new()
+	cyl.height = COLLISION_HEIGHT; cyl.radius = COLLISION_RADIUS; col.shape = cyl
+	body.add_child(col); body.collision_layer = 2; body.collision_mask = 1
+	entity.add_child(body); _collision_body = body
 
 # ─────────────────────────────────────────────────────────────
-# PUBLIC GETTERS / CONTROL
+# PUBLIC API
 # ─────────────────────────────────────────────────────────────
 
 func is_entity_alive() -> bool:
@@ -1127,6 +1051,9 @@ func is_entity_alive() -> bool:
 
 func get_entity_position() -> Vector3:
 	return _entity_pos
+
+func get_entity_node() -> Node3D:
+	return _entity_node
 
 func get_move_mode() -> MoveMode:
 	return _move_mode
@@ -1137,112 +1064,8 @@ func get_state() -> State:
 func get_current_path() -> Array[Vector3]:
 	return _path.duplicate()
 
-func set_player_immune(_immune: bool) -> void:
-	pass
-
-func reset_spawn_cycle() -> void:
-	match _state:
-		State.WAITING_FOR_WORLD:
-			return
-		State.WAITING_FOR_ACTIVE:
-			_player_was_active = false
-			_prev_player_pos   = Vector3.ZERO
-			_prev_player_basis = Basis.IDENTITY
-			_skip_active_wait  = false
-		State.SPAWN_DELAY:
-			_spawn_timer = randf_range(SPAWN_DELAY_MIN, SPAWN_DELAY_MAX)
-		State.ALIVE:
-			return
-		State.DESPAWNED:
-			_state        = State.WAITING_FOR_ACTIVE
-			_skip_active_wait = true
-			_respawn_timer    = 0.0
-
-func pause_spawn_cycle() -> void:
-	match _state:
-		State.WAITING_FOR_ACTIVE:
-			_spawn_timer = -1.0
-		State.SPAWN_DELAY:
-			_spawn_timer = -abs(_spawn_timer)
-		State.ALIVE:
-			return
-		State.DESPAWNED:
-			_respawn_timer = -abs(_respawn_timer)
-
-func resume_spawn_cycle() -> void:
-	match _state:
-		State.WAITING_FOR_ACTIVE:
-			if _spawn_timer < 0:
-				_spawn_timer = 0.0
-		State.SPAWN_DELAY:
-			if _spawn_timer < 0:
-				_spawn_timer = abs(_spawn_timer)
-		State.DESPAWNED:
-			if _respawn_timer < 0:
-				_respawn_timer = abs(_respawn_timer)
-		State.ALIVE:
-			return
-
-func force_reset_spawn_cycle() -> void:
-	if is_instance_valid(_entity_node):
-		_entity_node.queue_free()
-		_entity_node = null
-	_state                = State.WAITING_FOR_ACTIVE
-	_move_mode            = MoveMode.WANDER
-	_spawn_timer          = 0.0
-	_despawn_timer        = 0.0
-	_respawn_timer        = 0.0
-	_wander_timer         = 0.0
-	_step_timer           = 0.0
-	_los_react_timer      = 0.0
-	_skip_active_wait     = false
-	_player_was_active    = false
-	_current_speed        = SPEED_SLOW
-	_target_speed         = SPEED_SLOW
-	_los_reacting         = false
-	_last_known_player    = Vector3.ZERO
-	_wander_target        = Vector3.ZERO
-	_path.clear()
-	_current_target_index = 0
-	_prev_player_pos      = Vector3.ZERO
-	_prev_player_basis    = Basis.IDENTITY
-	_last_position        = Vector3.ZERO
-	_stuck_timer          = 0.0
-	_path_refresh_count   = 0
-	_bfs_cooldown         = 0.0
-	_invalidate_cache()
-
-func force_spawn() -> void:
-	if is_instance_valid(_entity_node):
-		_do_despawn()
-	_state            = State.WAITING_FOR_ACTIVE
-	_skip_active_wait = true
-	_try_spawn()
-
-func force_despawn() -> void:
-	if is_instance_valid(_entity_node):
-		_do_despawn()
-
-func spawn_passive() -> void:
-	if is_instance_valid(_entity_node):
-		_do_despawn()
-
-func defeat() -> void:
-	print("[EntityManager] Enemy defeated by player!")
-	_stop_sound()
-	if is_instance_valid(_entity_node):
-		_entity_node.queue_free()
-		_entity_node = null
-	emit_signal("enemy_defeated")
-	_state            = State.WAITING_FOR_ACTIVE
-	_skip_active_wait = true
-	_respawn_timer    = 0.0
-	_path_refresh_count = 0
-	_stuck_timer      = 0.0
-	_invalidate_cache()
-
-func get_entity_node() -> Node3D:
-	return _entity_node
+func is_hunting() -> bool:
+	return _is_hunting
 
 func get_first_spawn_lock_remaining() -> float:
 	return maxf(0.0, FIRST_SPAWN_LOCK - _first_spawn_lock_timer)
@@ -1250,5 +1073,65 @@ func get_first_spawn_lock_remaining() -> float:
 func has_first_input() -> bool:
 	return _first_input_received
 
-func is_hunting() -> bool:
-	return _is_hunting
+func set_player_immune(_immune: bool) -> void:
+	pass
+
+func skip_first_spawn_lock() -> void:
+	_first_spawn_lock_timer = FIRST_SPAWN_LOCK
+	_first_input_received   = true
+	print("[EntityManager] DEBUG: First-spawn lock skipped.")
+
+func defeat() -> void:
+	print("[EntityManager] Enemy defeated!")
+	_stop_sound()
+	if is_instance_valid(_entity_node): _entity_node.queue_free(); _entity_node = null
+	emit_signal("enemy_defeated")
+	_state = State.WAITING_FOR_ACTIVE; _skip_active_wait = true; _respawn_timer = 0.0
+	_stuck_repath_count = 0; _stuck_timer = 0.0; _invalidate_cache()
+
+func force_spawn() -> void:
+	if is_instance_valid(_entity_node): _do_despawn()
+	_state = State.WAITING_FOR_ACTIVE; _skip_active_wait = true; _try_spawn()
+
+func force_despawn() -> void:
+	if is_instance_valid(_entity_node): _do_despawn()
+
+func spawn_passive() -> void:
+	if is_instance_valid(_entity_node): _do_despawn()
+
+func reset_spawn_cycle() -> void:
+	match _state:
+		State.WAITING_FOR_WORLD: return
+		State.WAITING_FOR_ACTIVE:
+			_prev_player_pos = Vector3.ZERO; _prev_player_basis = Basis.IDENTITY; _skip_active_wait = false
+		State.SPAWN_DELAY:
+			_spawn_timer = randf_range(SPAWN_DELAY_MIN, SPAWN_DELAY_MAX)
+		State.DESPAWNED:
+			_state = State.WAITING_FOR_ACTIVE; _skip_active_wait = true; _respawn_timer = 0.0
+		State.ALIVE: return
+
+func pause_spawn_cycle() -> void:
+	match _state:
+		State.WAITING_FOR_ACTIVE: _spawn_timer   = -1.0
+		State.SPAWN_DELAY:        _spawn_timer   = -absf(_spawn_timer)
+		State.DESPAWNED:          _respawn_timer = -absf(_respawn_timer)
+		_: pass
+
+func resume_spawn_cycle() -> void:
+	match _state:
+		State.WAITING_FOR_ACTIVE: if _spawn_timer   < 0.0: _spawn_timer   = 0.0
+		State.SPAWN_DELAY:        if _spawn_timer   < 0.0: _spawn_timer   = absf(_spawn_timer)
+		State.DESPAWNED:          if _respawn_timer < 0.0: _respawn_timer = absf(_respawn_timer)
+		_: pass
+
+func force_reset_spawn_cycle() -> void:
+	if is_instance_valid(_entity_node): _entity_node.queue_free(); _entity_node = null
+	_state = State.WAITING_FOR_ACTIVE; _move_mode = MoveMode.WANDER
+	_spawn_timer = 0.0; _despawn_timer = 0.0; _respawn_timer = 0.0; _repath_timer = 0.0
+	_wander_timer = 0.0; _step_timer = 0.0; _los_react_timer = 0.0
+	_skip_active_wait = false; _current_speed = SPEED_SLOW; _target_speed = SPEED_SLOW
+	_los_reacting = false; _last_known_player = Vector3.ZERO
+	_path.clear(); _current_target_index = 0; _last_path_target = Vector2i(-9999, -9999)
+	_prev_player_pos = Vector3.ZERO; _prev_player_basis = Basis.IDENTITY
+	_last_position = Vector3.ZERO; _stuck_timer = 0.0; _stuck_repath_count = 0
+	_invalidate_cache()
