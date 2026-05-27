@@ -5,8 +5,8 @@ extends Node
 # CONSTANTS
 # ─────────────────────────────────────────────────────────────
 
-const CHUNK_SIZE      : int = 20
-const MINE_COUNT      : int = 40
+const CHUNK_SIZE      : int = 16  # Changed from 20 to 16
+const MINE_COUNT      : int = 26  # Adjusted proportionally (40 * 256/400 = 25.6 ≈ 26)
 const RENDER_RADIUS   : int = 1
 const DATA_RADIUS     : int = 2
 const TILES_PER_FRAME : int = 30
@@ -15,6 +15,10 @@ const FLOOD_RETRY_DELAY : float = 1.0
 
 # Thread pool settings
 const THREAD_POOL_SIZE : int = 4
+
+# Fog settings (reduced for more atmosphere)
+const FOG_DENSITY      : float = 0.064  # Was 0.015
+const FOG_START        : float = 10.0   # Was 20.0
 
 # AFTER
 const COLORS := {
@@ -48,6 +52,7 @@ var current_chunk : Vector2i = Vector2i.ZERO
 var _global_seed  : int      = 0
 
 var _loading_screen = null
+var player_ref : CharacterBody3D = null
 
 # ─────────────────────────────────────────────────────────────
 # ASYNC SPAWNING STATE
@@ -100,7 +105,7 @@ var _pending_start_lx : int = 0
 var _pending_start_lz : int = 0
 var _is_retrying : bool = false
 var _retry_timer : float = 0.0
-var _is_initial_flood_reveal : bool = false  # ADDED: Track initial vs player-triggered
+var _is_initial_flood_reveal : bool = false
 
 # ─────────────────────────────────────────────────────────────
 # SIGNALS
@@ -127,6 +132,15 @@ func _ready() -> void:
 	_find_loading_screen()
 	_last_chunk_for_buffer = current_chunk
 	_start_thread_pool()
+	_setup_fog()
+
+func _setup_fog() -> void:
+	# Apply reduced fog settings
+	var world_env = get_node_or_null("/root/Main/WorldEnvironment")
+	if world_env and world_env.environment:
+		world_env.environment.fog_enabled = true
+		world_env.environment.fog_density = FOG_DENSITY
+		world_env.environment.fog_light_color = Color(0.3, 0.35, 0.45)
 
 func _exit_tree() -> void:
 	_stop_thread_pool()
@@ -221,7 +235,7 @@ func _connect_signals() -> void:
 
 func _initialize_world() -> void:
 	var pos : Vector2i = Vector2i.ZERO
-	var mid : int = CHUNK_SIZE / 2
+	var mid : int = CHUNK_SIZE / 2  # Now 8
 
 	for dx in range(-1, 2):
 		for dz in range(-1, 2):
@@ -268,6 +282,12 @@ const _PZ         : int   = 999983
 const _MINE_DENSITY : float = float(MINE_COUNT) / float(CHUNK_SIZE * CHUNK_SIZE)
 
 func _is_world_mine(wx: int, wz: int) -> bool:
+	# 1. THE STARTING SAFE ZONE (prevents mines near spawn)
+	# Center of Chunk(0,0) is 8,8. We clear a 3x3 area.
+	if wx >= 7 and wx <= 9 and wz >= 7 and wz <= 9:
+		return false
+
+	# 2. THE GENERATION HASH
 	var threshold : int = int(_MINE_DENSITY * 0x7FFFFFFF)
 	var h : int = hash(_global_seed ^ (wx * _PX) ^ (wz * _PZ))
 	return absi(h) % 0x7FFFFFFF < threshold
@@ -366,6 +386,9 @@ func _spawn_batch() -> void:
 		tile.chunk_pos   = cp
 		tile.grid_x      = x
 		tile.grid_z      = z
+		
+		if tile.has_method("initialize_surface_y"):
+			tile.initialize_surface_y()
 
 		_sync_tile_visual_from_data(tile, is_mine, number, revealed, flagged, should_animate)
 
@@ -447,7 +470,7 @@ func _execute_flood_reveal_with_retry() -> void:
 			_retry_timer = FLOOD_RETRY_DELAY
 			_regenerate_world()
 			await get_tree().create_timer(FLOOD_RETRY_DELAY + 0.5).timeout
-			await _execute_flood_reveal_with_retry()  # ← RECURSIVE RETRY
+			await _execute_flood_reveal_with_retry()
 			return
 		else:
 			print("[ChunkManager] ERROR: Failed to create 3x3 clear area after %d attempts! Forcing generation layout..." % MAX_FLOOD_RETRIES)
@@ -586,7 +609,6 @@ func _recount_numbers_around(cp: Vector2i, lx: int, lz: int) -> void:
 					
 					n_chunk.tile_number[n_idx] = count
 
-# OPTIMIZED: Flood reveal with animation control
 func _flood_reveal(start_cp: Vector2i, start_lx: int, start_lz: int) -> void:
 	_in_flood_reveal = true
 	
@@ -624,7 +646,6 @@ func _flood_reveal(start_cp: Vector2i, start_lx: int, start_lz: int) -> void:
 
 		var tile = get_tile_node(cp, lx, lz)
 		if tile:
-			# FIX: Use _is_initial_flood_reveal to determine if we should animate
 			var should_animate = not _is_initial_flood_reveal
 			_sync_tile_visual_from_data(tile, false, chunk.tile_number[idx], true, false, should_animate)
 
@@ -682,8 +703,6 @@ func reveal_tile(cp: Vector2i, lx: int, lz: int) -> void:
 		emit_signal("map_updated")
 		return
 
-	# Player-triggered flood reveal should NOT set _is_initial_flood_reveal
-	# So the flag remains false, and should_animate will be true
 	_flood_reveal(cp, lx, lz)
 	emit_signal("map_updated")
 
@@ -760,7 +779,6 @@ func update_player_position(world_pos: Vector3, delta: float, _velocity: Vector3
 		_update_chunk_streaming()
 		emit_signal("map_updated")
 
-	# Only generate buffer chunks if chunk changed OR timer expired
 	if chunk_changed:
 		_generate_buffer_chunks()
 		_buffer_timer = BUFFER_INTERVAL
@@ -771,7 +789,6 @@ func update_player_position(world_pos: Vector3, delta: float, _velocity: Vector3
 			_generate_buffer_chunks()
 			_buffer_timer = BUFFER_INTERVAL
 		
-	# Ensure missing render chunks are retried
 	for dx in range(-RENDER_RADIUS, RENDER_RADIUS + 1):
 		for dz in range(-RENDER_RADIUS, RENDER_RADIUS + 1):
 			var cp := current_chunk + Vector2i(dx, dz)
@@ -788,7 +805,7 @@ func _generate_buffer_chunks() -> void:
 		for dz in range(-2, 3):
 			var cp : Vector2i = current_chunk + Vector2i(dx, dz)
 			if not chunks.has(cp) and not _pending_data_chunks.has(cp):
-				load_chunk(cp)  # This will queue for thread pool
+				load_chunk(cp)
 
 func _update_chunk_streaming() -> void:
 	var active_data   : Dictionary = {}
@@ -905,6 +922,12 @@ func get_pulse_time() -> float:
 
 func is_loading_complete() -> bool:
 	return _loading_complete
+
+func get_player() -> CharacterBody3D:
+	return player_ref
+
+func set_player(player: CharacterBody3D) -> void:
+	player_ref = player
 	
 func _try_finish_loading() -> void:
 	if _loading_complete:
@@ -935,3 +958,46 @@ func _find_loading_screen() -> void:
 	_loading_screen = get_parent().get_node_or_null("LoadingScreen")
 	if not _loading_screen:
 		push_warning("ChunkManager: Could not find LoadingScreen node!")
+
+
+# Add to ChunkManager.gd in the PUBLIC QUERY METHODS section
+
+func ensure_chunk_exists(cp: Vector2i) -> bool:
+	"""Thread-safe method to check and generate a chunk if it doesn't exist.
+	Returns true if the chunk exists or was created, false if generation is pending.
+	Safe to call from any thread (including StarManager)."""
+	
+	_thread_mutex.lock()
+	var exists = chunks.has(cp)
+	var is_pending = _pending_data_chunks.has(cp)
+	_thread_mutex.unlock()
+	
+	if exists:
+		return true
+	
+	if is_pending:
+		return false
+	
+	# Queue for generation on worker thread
+	_thread_mutex.lock()
+	if not _pending_data_chunks.has(cp):
+		_pending_data_chunks[cp] = false
+		_thread_semaphore.post()
+	_thread_mutex.unlock()
+	
+	return false
+
+func ensure_chunk_exists_sync(cp: Vector2i) -> bool:
+	"""Non-thread-safe version for use on main thread only."""
+	if chunks.has(cp):
+		return true
+	
+	if _pending_data_chunks.has(cp):
+		return false
+	
+	var chunk := Chunk.new()
+	chunk.chunk_pos = cp
+	chunk.generate(_global_seed, _make_mine_lookup())
+	chunks[cp] = chunk
+	
+	return true
