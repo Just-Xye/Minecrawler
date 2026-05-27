@@ -27,12 +27,14 @@ const RESPAWN_AFTER_DESPAWN : float = 5.0
 const WANDER_RETARGET_TIME  : float = 2.5
 const STEP_INTERVAL         : float = 0.15
 const LOS_MAX_DIST          : float = 18.0
-const ENTITY_HEIGHT         : float = 0.5
+const ENTITY_HEIGHT         : float = 1.5
 const ROTATION_SPEED        : float = 5.0
 const RANDOM_PATH_BIAS      : float = 0.6
 const STUCK_THRESHOLD       : float = 0.5
 const MIN_PATH_DISTANCE     : float = 0.5
 const MIN_GAP_SIZE          : float = 1.5
+const SPEED_HUNT            : float = 7.5
+const ASTAR_COOLDOWN_HUNT   : float = 0.15
 
 # 3-minute initial lock before the sweeper can ever spawn
 const FIRST_SPAWN_LOCK      : float = 180.0
@@ -41,6 +43,7 @@ const FIRST_SPAWN_LOCK      : float = 180.0
 const BFS_COOLDOWN_WANDER     : float = 1.0   # Recalc path every 1s when wandering
 const BFS_COOLDOWN_CHASE      : float = 0.3   # Recalc path every 0.3s when chasing
 const BFS_COOLDOWN_LAST_KNOWN : float = 0.5   # Recalc path every 0.5s when tracking
+const BFS_COOLDOWN_HUNT       : float = 0.15
 const MAX_CACHE_SIZE          : int   = 500   # Max cache entries before clearing
 
 # Sound constants
@@ -68,7 +71,7 @@ enum State {
 	JUMPSCARE_DESPAWN,
 }
 
-enum MoveMode { WANDER, CHASE_LOS, LAST_KNOWN }
+enum MoveMode { WANDER, CHASE_LOS, LAST_KNOWN, HUNT }
 
 # ─────────────────────────────────────────────────────────────
 # REFERENCES
@@ -95,6 +98,8 @@ var _los_react_timer : float = 0.0
 var _bfs_cooldown    : float = 0.0  # Performance: throttle BFS calls
 
 var _skip_active_wait : bool = false
+
+var _is_hunting   : bool = false
 
 # 3-minute lock
 var _first_input_received     : bool  = false
@@ -432,21 +437,38 @@ func _face_player_toward_entity() -> void:
 	if not player or not is_instance_valid(_entity_node):
 		return
 
+	# Calculate direction to entity
 	var dir : Vector3 = (_entity_pos - player.global_position)
 	dir.y = 0.0
 	if dir.length_squared() < 0.001:
 		return
-
-	var target_y := atan2(dir.x, dir.z)
-
-	if player.has_method("get") and "_rotation_y" in player:
-		player._rotation_y = rad_to_deg(target_y)
+	
+	var target_yaw := atan2(dir.x, dir.z)
+	var target_yaw_deg := rad_to_deg(target_yaw)
+	
+	# Method 1: Use force_look_at if available (cleanest)
+	if player.has_method("force_look_at"):
+		player.force_look_at(_entity_pos)
+		return
+	
+	# Method 2: Direct property manipulation (fallback)
+	if "_rotation_y" in player:
+		player._rotation_y = target_yaw_deg
 		player.rotation_degrees.y = player._rotation_y
+		
+		# Level out camera pitch for jumpscare
 		if "_rotation_x" in player:
 			player._rotation_x = 0.0
+		
 		var cam : Camera3D = player.get_node_or_null("Camera3D")
 		if cam:
 			cam.rotation_degrees.x = 0.0
+		return
+	
+	# Method 3: Transform manipulation (last resort)
+	var look_transform := Transform3D.IDENTITY
+	look_transform = look_transform.looking_at(dir.normalized(), Vector3.UP)
+	player.global_transform.basis = look_transform.basis
 
 func _tick_jumpscare(delta: float) -> void:
 	if is_instance_valid(_entity_node) and player:
@@ -530,9 +552,11 @@ func _update_animation(delta: float) -> void:
 func _rotate_towards_player(delta: float) -> void:
 	if not player or not _entity_node:
 		return
-	var direction  = (player.global_position - _entity_pos).normalized()
+	var direction = (player.global_position - _entity_pos).normalized()
 	var target_angle = atan2(direction.x, direction.z)
-	_current_rotation = lerp_angle(_current_rotation, target_angle, ROTATION_SPEED * delta)
+	# Faster rotation in hunt mode
+	var rotation_speed = ROTATION_SPEED * (2.0 if _is_hunting else 1.0)
+	_current_rotation = lerp_angle(_current_rotation, target_angle, rotation_speed * delta)
 	_entity_node.rotation.y = _current_rotation
 
 # ─────────────────────────────────────────────────────────────
@@ -659,6 +683,15 @@ func _find_spawn_tile() -> Vector2i:
 	var pool_size : int = maxi(1, candidates.size() / 4)
 	return candidates[randi() % pool_size]
 
+func force_hunt_player() -> void:
+	"""Force the enemy to hunt the player aggressively (called when all stars collected)"""
+	_is_hunting = true
+	if _state == State.ALIVE:
+		_move_mode = MoveMode.HUNT
+		_target_speed = SPEED_HUNT
+		_path.clear()
+		print("[EntityManager] HUNT MODE ACTIVATED!")
+
 # ─────────────────────────────────────────────────────────────
 # ALIVE UPDATE
 # ─────────────────────────────────────────────────────────────
@@ -675,44 +708,63 @@ func _update_alive(delta: float) -> void:
 		return
 
 	var player_pos : Vector3 = _get_tile_center(player.global_position if player else Vector3.ZERO)
-	var has_los    : bool    = _check_line_of_sight(player_pos)
+	
+	# In hunt mode, always have line of sight for pathfinding purposes
+	var has_los : bool = false
+	if _is_hunting:
+		has_los = true  # Always chase in hunt mode
+	else:
+		has_los = _check_line_of_sight(player_pos)
 
-	if has_los:
+	# Update movement mode based on line of sight and hunt status
+	if has_los or _is_hunting:
 		_last_known_player = player_pos
-		_despawn_timer     = DESPAWN_TIMEOUT
+		_despawn_timer = DESPAWN_TIMEOUT
 
-		if _move_mode != MoveMode.CHASE_LOS:
+		# Transition to appropriate chase mode
+		if _move_mode != MoveMode.CHASE_LOS and _move_mode != MoveMode.HUNT:
 			_play_sight_sound()
-			_move_mode       = MoveMode.CHASE_LOS
-			_los_react_timer = randf_range(LOS_REACT_MIN, LOS_REACT_MAX)
-			_los_reacting    = true
-			_current_speed   = SPEED_SLOW
+			_move_mode = MoveMode.HUNT if _is_hunting else MoveMode.CHASE_LOS
+			_los_react_timer = randf_range(LOS_REACT_MIN, LOS_REACT_MAX) if not _is_hunting else 0.0
+			_los_reacting = true
+			_current_speed = SPEED_SLOW
 			_path.clear()
 			_current_target_index = 0
-			_path_refresh_count   = 0
+			_path_refresh_count = 0
 
-		if _los_reacting:
+		# Handle reaction delay (only for non-hunt mode)
+		if _los_reacting and not _is_hunting:
 			_los_react_timer -= delta
 			if _los_react_timer <= 0.0:
 				_los_reacting = false
 				_target_speed = SPEED_FAST
+		elif _is_hunting:
+			# In hunt mode, instantly go to full speed and stop reacting
+			_los_reacting = false
+			_target_speed = SPEED_HUNT
 	else:
+		# No line of sight and not hunting - fallback to last known or wander
 		if _move_mode == MoveMode.CHASE_LOS:
-			_move_mode    = MoveMode.LAST_KNOWN
+			_move_mode = MoveMode.LAST_KNOWN
 			_target_speed = SPEED_SLOW
 			_path.clear()
 			_current_target_index = 0
 		elif _move_mode == MoveMode.LAST_KNOWN:
 			var dist_to_last_known = _entity_pos.distance_to(_last_known_player)
 			if dist_to_last_known < MIN_PATH_DISTANCE:
-				_move_mode    = MoveMode.WANDER
+				_move_mode = MoveMode.WANDER
 				_target_speed = SPEED_SLOW
 				_path.clear()
 				_current_target_index = 0
+		elif _move_mode == MoveMode.HUNT:
+			# Should never happen, but fallback to chase if hunt mode loses target
+			_move_mode = MoveMode.CHASE_LOS
+			_target_speed = SPEED_FAST
 
+	# Smoothly interpolate current speed to target speed
 	_current_speed = lerpf(_current_speed, _target_speed, delta * 3.0)
 
-	# Stuck detection
+	# Stuck detection - prevent enemy from getting permanently stuck on geometry
 	var movement := (_entity_pos - _last_position).length()
 	if movement < 0.05:
 		_stuck_timer += delta
@@ -722,23 +774,27 @@ func _update_alive(delta: float) -> void:
 			_path.clear()
 			_current_target_index = 0
 			print("[EntityManager] Stuck detected, forcing repath #", _path_refresh_count)
+			
+			# If stuck too many times, despawn and respawn later
 			if _path_refresh_count >= 100:
 				print("[EntityManager] Repath limit reached — despawning")
 				_do_despawn()
 				_state = State.WAITING_FOR_ACTIVE
 				_skip_active_wait = true
-				_respawn_timer    = 0.0
+				_respawn_timer = 0.0
 				_path_refresh_count = 0
 				return
 	else:
-		_stuck_timer    = 0.0
-		_last_position  = _entity_pos
+		_stuck_timer = 0.0
+		_last_position = _entity_pos
 
+	# Pathfinding logic tick
 	_step_timer -= delta
 	if _step_timer <= 0.0:
 		_step_timer = STEP_INTERVAL
 		_advance_path(player_pos)
 
+	# Execute movement
 	_move_entity(delta)
 	_entity_node.global_position = _entity_pos
 
@@ -792,6 +848,9 @@ func _advance_path(player_pos: Vector3) -> void:
 	var bfs_delay : float = BFS_COOLDOWN_WANDER
 	
 	match _move_mode:
+		MoveMode.HUNT:
+			target_pos = player_pos
+			bfs_delay = BFS_COOLDOWN_HUNT
 		MoveMode.CHASE_LOS:
 			target_pos = player_pos
 			bfs_delay = BFS_COOLDOWN_CHASE
@@ -813,16 +872,19 @@ func _advance_path(player_pos: Vector3) -> void:
 
 	# Only recalculate if target changed significantly
 	if _path.is_empty() or _current_target_index >= _path.size() or current_tile.distance_squared_to(target_tile) > 4:
-		_bfs_cooldown = bfs_delay  # Set cooldown before expensive BFS
+		_bfs_cooldown = bfs_delay
 		
-		if _move_mode == MoveMode.CHASE_LOS and randf() < RANDOM_PATH_BIAS:
+		if _move_mode == MoveMode.HUNT:
+			# In hunt mode, always take the most direct path
+			_path = _bfs_path(_entity_pos, target_pos, false)
+		elif _move_mode == MoveMode.CHASE_LOS and randf() < RANDOM_PATH_BIAS:
 			_path = _bfs_path_randomized(_entity_pos, target_pos)
 		else:
 			_path = _bfs_path(_entity_pos, target_pos, _move_mode == MoveMode.WANDER)
 		_current_target_index = 0
 		for i in range(_path.size()):
 			_path[i] = _get_tile_center(_path[i])
-
+			
 func _random_wander_target() -> Vector3:
 	if not chunk_manager:
 		return _entity_pos
@@ -1187,3 +1249,6 @@ func get_first_spawn_lock_remaining() -> float:
 
 func has_first_input() -> bool:
 	return _first_input_received
+
+func is_hunting() -> bool:
+	return _is_hunting
