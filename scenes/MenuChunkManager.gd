@@ -5,10 +5,10 @@ extends Node
 # CONSTANTS
 # ─────────────────────────────────────────────────────────────
 
-const CHUNK_SIZE      : int = 20
-const MINE_COUNT      : int = 40
-const RENDER_RADIUS   : int = 1
-const DATA_RADIUS     : int = 2
+const CHUNK_SIZE      : int = 16
+const MINE_COUNT      : int = 26
+const RENDER_RADIUS   : int = 2  # 5x5 grid = 25 chunks
+const DATA_RADIUS     : int = 3  # Increased to match render radius + buffer
 const TILES_PER_FRAME : int = 30
 const BUFFER_INTERVAL : float = 0.25
 
@@ -42,6 +42,8 @@ var pulse_time    : float = 0.0
 var current_chunk : Vector2i = Vector2i.ZERO
 var _global_seed  : int      = 0
 
+var _is_retrying_flood : bool = false
+
 # ─────────────────────────────────────────────────────────────
 # ACTIVE FLAG — set false by deactivate() on game start
 # ─────────────────────────────────────────────────────────────
@@ -63,13 +65,14 @@ var _batch_index : int = 0
 # ─────────────────────────────────────────────────────────────
 
 var _buffer_timer : float = 0.0
-var _last_chunk_for_buffer : Vector2i = Vector2i.ZERO  # Only buffer when chunk changes
+var _last_chunk_for_buffer : Vector2i = Vector2i.ZERO
 
 # ─────────────────────────────────────────────────────────────
 # LOADING TRACKING STATE
 # ─────────────────────────────────────────────────────────────
 
-const SPAWN_CHUNK_COUNT : int = 9
+# With RENDER_RADIUS = 2, the visible area is 5x5 = 25 chunks
+const SPAWN_CHUNK_COUNT : int = 25
 
 var _spawn_required  : Dictionary = {}
 var _spawn_completed : Dictionary = {}
@@ -120,6 +123,9 @@ func _ready() -> void:
 	set_process_unhandled_input(false)
 	add_to_group("menu_chunk_manager")
 	_last_chunk_for_buffer = current_chunk
+	
+	print("[MenuChunkManager] Initialized with RENDER_RADIUS = ", RENDER_RADIUS)
+	print("[MenuChunkManager] Will load ", SPAWN_CHUNK_COUNT, " chunks for full render area")
 
 func _process(delta: float) -> void:
 	if not _active:
@@ -164,19 +170,23 @@ func _initialize_seed() -> void:
 	_global_seed = (randi() << 32) | randi()
 
 func _initialize_spawn_tracking() -> void:
-	for dx in range(-1, 2):
-		for dz in range(-1, 2):
+	# Track all chunks within RENDER_RADIUS (5x5 grid)
+	for dx in range(-RENDER_RADIUS, RENDER_RADIUS + 1):
+		for dz in range(-RENDER_RADIUS, RENDER_RADIUS + 1):
 			_spawn_required[Vector2i(dx, dz)] = true
+	
+	print("[MenuChunkManager] Tracking ", _spawn_required.size(), " required chunks")
 
 func _connect_signals() -> void:
 	spawn_chunks_ready.connect(_on_spawn_chunks_ready)
 
 func _initialize_world() -> void:
 	var pos : Vector2i = Vector2i.ZERO
-	var mid : int = CHUNK_SIZE / 2
+	var mid : int = CHUNK_SIZE / 2  # Now 8
 
-	for dx in range(-1, 2):
-		for dz in range(-1, 2):
+	# Generate all chunks within RENDER_RADIUS (5x5 grid)
+	for dx in range(-RENDER_RADIUS, RENDER_RADIUS + 1):
+		for dz in range(-RENDER_RADIUS, RENDER_RADIUS + 1):
 			var cp : Vector2i = Vector2i(dx, dz)
 			var chunk : Chunk = Chunk.new()
 			chunk.chunk_pos = cp
@@ -325,6 +335,7 @@ func _spawn_batch() -> void:
 		tile.chunk_pos    = cp
 		tile.grid_x       = x
 		tile.grid_z       = z
+		tile.is_menu_tile = true
 		
 		if tile.has_method("_setup_area3d"):
 			tile._setup_area3d()
@@ -368,6 +379,7 @@ func _update_spawn_progress(cp: Vector2i) -> void:
 		var done      : int = _spawn_completed.size()
 		var total_req : int = SPAWN_CHUNK_COUNT
 		emit_signal("spawn_chunk_progress", done, total_req)
+		print("[MenuChunkManager] Progress: %d/%d chunks loaded" % [done, total_req])
 		if done >= total_req:
 			spawn_ready = true
 			emit_signal("spawn_chunks_ready")
@@ -375,7 +387,7 @@ func _update_spawn_progress(cp: Vector2i) -> void:
 func _on_spawn_chunks_ready() -> void:
 	if _pending_flood_reveal:
 		_pending_flood_reveal = false
-		print("[MenuChunkManager] 3x3 chunks ready - executing initial flood reveal")
+		print("[MenuChunkManager] All %d chunks ready - executing initial flood reveal" % SPAWN_CHUNK_COUNT)
 		_execute_flood_reveal_with_retry()
 
 # ─────────────────────────────────────────────────────────────
@@ -475,7 +487,6 @@ func _flood_reveal_from_point(start_cp: Vector2i, start_lx: int, start_lz: int) 
 		var lx : int      = entry[1]
 		var lz : int      = entry[2]
 
-		# Use packed integer key instead of string formatting
 		var key : int = _pack_key(cp, lx, lz)
 		if visited.has(key):
 			continue
@@ -527,8 +538,19 @@ func _flood_reveal_from_point(start_cp: Vector2i, start_lx: int, start_lz: int) 
 # ─────────────────────────────────────────────────────────────
 
 func _execute_flood_reveal_with_retry() -> void:
+	if _is_retrying_flood:
+		return
+	_is_retrying_flood = true
 	if not _active:
 		return
+	
+	# First, ensure all required chunks are loaded
+	if not _are_all_required_chunks_loaded():
+		print("[MenuChunkManager] Not all required chunks loaded yet, waiting...")
+		_is_retrying = true
+		_retry_timer = 0.5
+		return
+	
 	_flood_reveal(_pending_start_cp, _pending_start_lx, _pending_start_lz)
 
 	if not _active or not is_inside_tree():
@@ -542,10 +564,10 @@ func _execute_flood_reveal_with_retry() -> void:
 
 		if _flood_retry_count <= MAX_FLOOD_RETRIES:
 			print("[MenuChunkManager] No 3x3 clear area detected! Retry %d/%d..." % [_flood_retry_count, MAX_FLOOD_RETRIES])
-			emit_signal("spawn_chunk_progress", 9 + _flood_retry_count, 9 + MAX_FLOOD_RETRIES)
+			emit_signal("spawn_chunk_progress", SPAWN_CHUNK_COUNT + _flood_retry_count, SPAWN_CHUNK_COUNT + MAX_FLOOD_RETRIES)
 			_is_retrying = true
 			_retry_timer = FLOOD_COOLDOWN_INTERVAL
-			_regenerate_world()
+			# REMOVED: _regenerate_world() - Don't regenerate chunks, just retry the flood reveal
 			return
 		else:
 			print("[MenuChunkManager] Forcing 3x3 clear area after %d attempts." % MAX_FLOOD_RETRIES)
@@ -556,8 +578,20 @@ func _execute_flood_reveal_with_retry() -> void:
 		print("[MenuChunkManager] 3x3 clear area verified on attempt: ", _flood_retry_count)
 		_loading_complete = true
 		emit_signal("spawn_chunks_ready")
+		
+	_is_retrying_flood = false
+
+func _are_all_required_chunks_loaded() -> bool:
+	"""Check if all chunks within RENDER_RADIUS are loaded"""
+	for dx in range(-RENDER_RADIUS, RENDER_RADIUS + 1):
+		for dz in range(-RENDER_RADIUS, RENDER_RADIUS + 1):
+			var cp := Vector2i(dx, dz)
+			if not chunk_nodes.has(cp):
+				return false
+	return true
 
 func _regenerate_world() -> void:
+	print("[MenuChunkManager] WARNING: Regenerating entire world!")
 	for cp in chunk_nodes.keys():
 		if is_instance_valid(chunk_nodes[cp]):
 			chunk_nodes[cp].queue_free()
@@ -831,7 +865,6 @@ func update_player_position(world_pos: Vector3, delta: float, _velocity: Vector3
 		_update_chunk_streaming()
 		emit_signal("map_updated")
 
-	# Only generate buffer chunks if chunk changed OR timer expired
 	if chunk_changed:
 		_generate_buffer_chunks()
 		_buffer_timer = BUFFER_INTERVAL
@@ -843,14 +876,14 @@ func update_player_position(world_pos: Vector3, delta: float, _velocity: Vector3
 			_buffer_timer = BUFFER_INTERVAL
 
 func _generate_buffer_chunks() -> void:
-	# Skip if player hasn't moved and we already buffered this area
 	if _last_chunk_for_buffer == current_chunk and _buffer_timer > BUFFER_INTERVAL * 0.5:
 		return
 	
 	_last_chunk_for_buffer = current_chunk
 	
-	for dx in range(-2, 3):
-		for dz in range(-2, 3):
+	# Buffer area is larger than render radius (DATA_RADIUS = 3)
+	for dx in range(-DATA_RADIUS, DATA_RADIUS + 1):
+		for dz in range(-DATA_RADIUS, DATA_RADIUS + 1):
 			var cp : Vector2i = current_chunk + Vector2i(dx, dz)
 			if not chunks.has(cp):
 				_generate_chunk_data_only(cp)
