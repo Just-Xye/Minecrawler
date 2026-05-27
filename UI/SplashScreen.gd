@@ -1,21 +1,21 @@
 extends CanvasLayer
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 # SIGNALS
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 
 signal splash_finished
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 # UI NODES
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 
 @onready var background: ColorRect = $ColorRect
 @onready var animated_logo: AnimatedSprite2D = $CenterContainer/VBoxContainer/AnimatedSprite2D
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 # VARIABLES
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 
 var _chunk_manager: MenuChunkManager
 var _splash_started: bool = false
@@ -23,9 +23,13 @@ var _spinner_tween: Tween
 var _check_timer: Timer
 var _main_menu_instance: Node
 
-# ─────────────────────────────────────────────
+# The number of chunks needed for full render radius
+# With RENDER_RADIUS = 2, that's a 5x5 grid = 25 chunks
+const REQUIRED_RENDER_CHUNKS : int = 25  # (RENDER_RADIUS * 2 + 1) ^ 2 = 5^2 = 25
+
+# ─────────────────────────────────────────────────────────────
 # READY
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 
 func _ready() -> void:
 	layer = 10
@@ -44,9 +48,9 @@ func _ready() -> void:
 	# Load the MainMenu scene using call_deferred
 	call_deferred("_load_main_menu")
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 # LOAD MAIN MENU (FOR CHUNK GENERATION)
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 
 func _load_main_menu() -> void:
 	print("[SplashScreen] Loading MainMenu scene...")
@@ -76,31 +80,41 @@ func _load_main_menu() -> void:
 	# Find the chunk manager (inside MenuWorld)
 	_find_chunk_manager()
 
-# In SplashScreen.gd, update the _disable_audio_on_main_menu function:
-
 func _disable_audio_on_main_menu() -> void:
 	if not _main_menu_instance:
 		return
 	
-	var menu_ui = _main_menu_instance.get_node_or_null("MenuUI")
+	var menu_ui = _find_title_screen()
 	if menu_ui and menu_ui.has_method("mute_audio"):
 		menu_ui.mute_audio(true)
+		print("[SplashScreen] Audio muted on TitleScreen")
+
+func _find_title_screen():
+	"""Find the TitleScreen/CanvasLayer in the MainMenu scene"""
+	if not _main_menu_instance:
+		return null
+	
+	for child in _main_menu_instance.get_children():
+		if child is CanvasLayer:
+			return child
+	return null
 
 func _enable_audio_on_main_menu() -> void:
 	if not _main_menu_instance:
 		return
 	
-	var menu_ui = _main_menu_instance.get_node_or_null("MenuUI")
+	var menu_ui = _find_title_screen()
 	if menu_ui:
 		if menu_ui.has_method("mute_audio"):
 			menu_ui.mute_audio(false)
+			print("[SplashScreen] Audio unmuted on TitleScreen")
 		
 		if menu_ui.has_method("_fade_in"):
 			menu_ui._fade_in()
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 # CHUNK GENERATION MONITORING
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 
 func _find_chunk_manager() -> void:
 	print("[SplashScreen] Looking for MenuChunkManager...")
@@ -122,7 +136,11 @@ func _find_chunk_manager() -> void:
 		_finish_splash()
 		return
 	
-	print("[SplashScreen] MenuChunkManager found! Monitoring chunks...")
+	print("[SplashScreen] MenuChunkManager found!")
+	print("[SplashScreen] CHUNK_SIZE: ", _chunk_manager.CHUNK_SIZE)
+	print("[SplashScreen] RENDER_RADIUS: ", _chunk_manager.RENDER_RADIUS)
+	print("[SplashScreen] Required chunks for full render: ", REQUIRED_RENDER_CHUNKS)
+	print("[SplashScreen] Monitoring chunks...")
 	
 	# Enable processing on MainMenu so chunks generate
 	_main_menu_instance.process_mode = Node.PROCESS_MODE_INHERIT
@@ -136,6 +154,7 @@ func _find_chunk_manager() -> void:
 	if _chunk_manager.has_signal("spawn_chunk_progress"):
 		if not _chunk_manager.spawn_chunk_progress.is_connected(_on_spawn_chunk_progress):
 			_chunk_manager.spawn_chunk_progress.connect(_on_spawn_chunk_progress)
+			print("[SplashScreen] Connected to spawn_chunk_progress signal")
 	
 	# Start periodic check
 	_check_timer = Timer.new()
@@ -150,8 +169,9 @@ func _find_chunk_manager() -> void:
 func _on_spawn_chunk_progress(completed: int, total: int) -> void:
 	print("[SplashScreen] Chunk progress: %d/%d" % [completed, total])
 	
-	if completed >= 9:
-		print("[SplashScreen] All 9 spawn chunks completed!")
+	# With RENDER_RADIUS = 2, we need all 25 render chunks
+	if completed >= REQUIRED_RENDER_CHUNKS:
+		print("[SplashScreen] All %d render chunks completed!" % REQUIRED_RENDER_CHUNKS)
 		_finish_splash()
 
 func _on_spawn_chunks_ready() -> void:
@@ -174,30 +194,30 @@ func _check_chunk_status() -> void:
 		_finish_splash()
 		return
 	
-	# Check if we have the 3x3 area loaded
+	# Check if we have the full render area loaded (5x5 grid from -2 to +2)
 	var loaded_count = 0
 	var required_chunks = 0
 	
-	for x in range(-1, 2):
-		for z in range(-1, 2):
+	for x in range(-_chunk_manager.RENDER_RADIUS, _chunk_manager.RENDER_RADIUS + 1):
+		for z in range(-_chunk_manager.RENDER_RADIUS, _chunk_manager.RENDER_RADIUS + 1):
 			var chunk_pos = Vector2i(x, z)
 			required_chunks += 1
 			if _chunk_manager.chunk_nodes.has(chunk_pos) or _chunk_manager.loaded_chunks.has(chunk_pos):
 				loaded_count += 1
 	
 	# Also check if spawn_completed size meets requirement
-	if _chunk_manager._spawn_completed.size() >= 9:
+	if _chunk_manager._spawn_completed.size() >= REQUIRED_RENDER_CHUNKS:
 		print("[SplashScreen] Spawn completed size: %d" % _chunk_manager._spawn_completed.size())
 		_finish_splash()
 		return
 	
 	if loaded_count >= required_chunks:
-		print("[SplashScreen] 3x3 chunk area loaded! (%d/%d)" % [loaded_count, required_chunks])
+		print("[SplashScreen] Full render area loaded! (%d/%d chunks)" % [loaded_count, required_chunks])
 		_finish_splash()
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 # SPLASH FINISH & TRANSITION
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 
 func _finish_splash() -> void:
 	if _splash_started:
@@ -230,16 +250,19 @@ func _finish_splash() -> void:
 	# Enable audio on MainMenu before showing it
 	_enable_audio_on_main_menu()
 	
-	# Find and show MenuUI (CanvasLayer)
+	# Find and show TitleScreen (CanvasLayer)
 	if _main_menu_instance:
-		var menu_ui = _main_menu_instance.get_node_or_null("MenuUI")
-		if menu_ui:
-			menu_ui.visible = true
-			if menu_ui.has_method("_fade_in"):
-				menu_ui._fade_in()
+		var title_screen = _find_title_screen()
+		if title_screen:
+			title_screen.visible = true
+			if title_screen.has_method("_fade_in"):
+				title_screen._fade_in()
 		
 		# Enable processing on MainMenu
 		_main_menu_instance.process_mode = Node.PROCESS_MODE_INHERIT
+	
+	# Emit finished signal
+	emit_signal("splash_finished")
 	
 	# Remove splash screen
 	queue_free()
