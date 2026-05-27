@@ -7,15 +7,15 @@ extends CharacterBody3D
 @export var base_speed         : float = 2.5
 @export var gravity            : float = 20.0
 @export var jump_force         : float = 7.0
-@export var eye_height         : float = 0.5
+@export var eye_height         : float = 0.3
 @export var sprint_multiplier  : float = 1.8
 @export var slow_multiplier    : float = 0.5
 @export var chunk_manager_path : NodePath
 @export var spawn_height       : float = 1.5
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 # LIVES
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 const MAX_LIVES          : int   = 4
 const HIT_INVULN_SECS    : float = 1.5
 const SPAWN_HEIGHT_OFFSET : float = 2.0
@@ -24,13 +24,13 @@ var lives        : int   = MAX_LIVES
 var is_immortal  : bool  = false
 var _hit_timer   : float = 0.0
 
-signal life_lost
-signal life_gained
+signal life_lost(lives_remaining: int)
+signal life_gained(lives_remaining: int)
 signal lives_depleted
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 # WEAPON STATE
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 var _has_weapon : bool = false
 var _weapon_equipped : bool = false
 var _weapon_manager = null
@@ -39,9 +39,9 @@ var _is_shooting : bool = false
 var _shoot_cooldown : float = 0.0
 const SHOOT_COOLDOWN_TIME : float = 0.5
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 # STATE
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 var _rotation_x : float = 0.0
 var _rotation_y : float = 0.0
 var _has_moved  : bool  = false
@@ -49,13 +49,10 @@ var _current_speed : float = 5.0
 var _initial_spawn_complete  : bool = false
 var _position_retry_count    : int  = 0
 const MAX_POSITION_RETRIES   : int  = 10
-
+var _camera_locked : bool = false
 var _is_sinking_with_tile : bool = false
 var _sink_tween : Tween = null
 var _original_ground_y : float = 0.0
-var _tile_sink_start_y : float = 0.0
-var _tile_sink_end_y : float = 0.0
-var _tile_sink_duration : float = 0.0
 
 var _mouse_sensitivity_value : float = 0.0015
 var _invert_y : bool = false
@@ -65,9 +62,9 @@ var _invert_y : bool = false
 @onready var weapon_holder : Node3D    = $Camera3D/WeaponHolder
 @onready var shoot_ray_cast: RayCast3D = $Camera3D/ShootRayCast
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 # LIFECYCLE
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 func _ready() -> void:
 	Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 	camera.position.y = eye_height
@@ -118,11 +115,10 @@ func _connect_settings() -> void:
 	_mouse_sensitivity_value = SettingsManager.get_setting("sensitivity", 0.0015)
 	_invert_y = SettingsManager.get_setting("invert_y", false)
 	
-	if EventBus:
-		if EventBus.has_signal("mouse_sensitivity_changed"):
-			EventBus.mouse_sensitivity_changed.connect(_on_sensitivity_changed)
-		if EventBus.has_signal("invert_y_changed"):
-			EventBus.invert_y_changed.connect(_on_invert_y_changed)
+	if not SettingsManager.sensitivity_changed.is_connected(_on_sensitivity_changed):
+		SettingsManager.sensitivity_changed.connect(_on_sensitivity_changed)
+	if not SettingsManager.invert_y_changed.is_connected(_on_invert_y_changed):
+		SettingsManager.invert_y_changed.connect(_on_invert_y_changed)
 	
 	print("[Player] Settings loaded - Sensitivity: ", _mouse_sensitivity_value, " Invert Y: ", _invert_y)
 
@@ -176,18 +172,35 @@ func _physics_process(delta: float) -> void:
 	if chunk_manager and is_instance_valid(chunk_manager):
 		chunk_manager.update_player_position(global_position, delta, velocity)
 
-# ─────────────────────────────────────────────
+# Add to Player.gd
+func force_look_at(target_pos: Vector3) -> void:
+	var dir = (target_pos - global_position).normalized()
+	_rotation_y = rad_to_deg(atan2(dir.x, dir.z))
+	_rotation_x = 0.0 # Level the head
+	rotation_degrees.y = _rotation_y
+	camera.rotation_degrees.x = _rotation_x
+
+# ─────────────────────────────────────────────────────────────
+# JUMPSCARE
+# ─────────────────────────────────────────────────────────────
+
+func lock_camera(locked: bool) -> void:
+	_camera_locked = locked
+	if locked:
+		# Optionally force velocity to zero
+		velocity = Vector3.ZERO
+
+# ─────────────────────────────────────────────────────────────
 # TILE SINKING (called by tiles when they sink)
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
+
 func sink_with_tile(start_y: float, target_y: float, duration: float) -> void:
-	"""Called by tiles to make the player sink along with them during initial flood reveal"""
+	"""Called by tiles to make the player sink along with them"""
 	if _is_sinking_with_tile:
 		return
 	
 	_is_sinking_with_tile = true
-	_tile_sink_start_y = start_y
-	_tile_sink_end_y = target_y
-	_tile_sink_duration = duration
+	_original_ground_y = start_y
 	
 	if _sink_tween and is_instance_valid(_sink_tween):
 		_sink_tween.kill()
@@ -197,12 +210,9 @@ func sink_with_tile(start_y: float, target_y: float, duration: float) -> void:
 		_is_sinking_with_tile = false
 		return
 	
-	# FIX #2: Calculate the sink distance and sink the player proportionally
+	# Calculate target player Y position (feet stay on tile surface)
 	var sink_distance = start_y - target_y
-	var current_player_y = global_position.y
-	var target_player_y = current_player_y - sink_distance
-	
-	print("[Player] Sinking with tile: %.2f -> %.2f (distance: %.2f)" % [current_player_y, target_player_y, sink_distance])
+	var target_player_y = global_position.y - sink_distance
 	
 	_sink_tween.set_ease(Tween.EASE_IN)
 	_sink_tween.set_trans(Tween.TRANS_CUBIC)
@@ -212,11 +222,10 @@ func sink_with_tile(start_y: float, target_y: float, duration: float) -> void:
 func _on_sink_with_tile_finished() -> void:
 	_is_sinking_with_tile = false
 	_sink_tween = null
-	print("[Player] Finished sinking with tile")
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 # LIVES SYSTEM
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 func lose_life() -> void:
 	if is_immortal:
 		print("[Player] Immortal mode - no life lost")
@@ -230,7 +239,7 @@ func lose_life() -> void:
 		lives -= 1
 		_hit_timer = HIT_INVULN_SECS
 		print("[Player] Life lost! Lives remaining: %d" % lives)
-		life_lost.emit()
+		life_lost.emit(lives)
 		
 		if lives <= 0:
 			lives_depleted.emit()
@@ -243,13 +252,13 @@ func lose_all_lives() -> void:
 	lives = 0
 	print("[Player] Caught by enemy — all lives lost!")
 	_flash_red_screen()
-	lives_depleted.emit()
+	lives_depleted.emit(lives)
 
 func gain_life() -> void:
 	if lives < MAX_LIVES:
 		lives += 1
 		print("[Player] Life gained! Lives: %d" % lives)
-		life_gained.emit()
+		life_gained.emit(lives)
 	else:
 		print("[Player] Already at max lives (%d)" % MAX_LIVES)
 
@@ -278,9 +287,9 @@ func _flash_red_screen() -> void:
 		tween.tween_property(overlay, "color:a", 0.0, 0.5)
 		tween.tween_callback(overlay.queue_free)
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 # WEAPON FUNCTIONS
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 func _on_weapon_picked_up() -> void:
 	_has_weapon = true
 	print("[Player] Weapon acquired!")
@@ -404,9 +413,9 @@ func _add_shoot_effect() -> void:
 	await get_tree().create_timer(0.2).timeout
 	hit_effect.queue_free()
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 # SPAWN POSITIONING
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 func _on_initial_spawn_ready() -> void:
 	print("[Player] Spawn chunks ready signal received")
 	_position_on_clear_tile()
@@ -529,10 +538,14 @@ func _is_tile_truly_clear(world_pos: Vector3) -> bool:
 	var result := get_world_3d().direct_space_state.intersect_ray(query)
 	return result.is_empty()
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 # INPUT
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 func _input(event: InputEvent) -> void:
+	# Check if camera is locked (during jumpscare, death, etc.)
+	if _camera_locked:
+		return  # Ignore all input during camera lock
+	
 	if not _initial_spawn_complete:
 		if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 			_rotation_y -= event.relative.x * _mouse_sensitivity_value
@@ -549,7 +562,7 @@ func _input(event: InputEvent) -> void:
 		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN and event.pressed:
 			if _weapon_equipped:
 				_unequip_weapon()
-
+				
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		_rotation_y -= event.relative.x * _mouse_sensitivity_value
 		var y_multiplier = -1 if _invert_y else 1
@@ -579,9 +592,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		elif event.button_index == MOUSE_BUTTON_RIGHT:
 			_shoot_ray_flag()
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 # MOVEMENT HELPERS
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 func _get_movement_input() -> Vector2:
 	var input_dir := Vector2.ZERO
 	if Input.is_action_pressed("move_forward"):   input_dir.y -= 1
@@ -609,9 +622,9 @@ func _get_current_speed() -> float:
 		camera.position.y = lerp(camera.position.y, eye_height, 0.15)
 	return current_speed
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 # RAYCASTING
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 func _shoot_ray_reveal() -> void:
 	if not _initial_spawn_complete:
 		return
@@ -649,9 +662,9 @@ func _get_tile_under_cursor() -> Node:
 		node = node.get_parent()
 	return null
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 # PUBLIC METHODS
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 func disable_controls() -> void:
 	set_physics_process(false)
 	set_process_input(false)
