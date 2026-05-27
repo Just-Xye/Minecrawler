@@ -24,6 +24,8 @@ const MAP_FADE_DURATION        : float = 0.2
 const ENEMY_CATCH_RADIUS       : float = 1.5
 const HIDE_HUD_KEY             : int   = KEY_G
 
+const PAUSE_MENU_SCENE         : String = "res://UI/PauseUI.tscn"
+
 # ─────────────────────────────────────────────────────────────
 # DEBUG TOGGLE
 # ─────────────────────────────────────────────────────────────
@@ -68,10 +70,10 @@ const OMINOUS_INTERVAL_MAX  : float = 90.0
 var player_camera      : Camera3D = null
 var is_free_cam_active : bool     = false
 
-var target_fog_density   : float = 0.15
+var target_fog_density   : float = 0.24
 var fog_adjust_speed     : float = 2.0
 var fog_enabled          : bool  = true
-var original_fog_density : float = 0.15
+var original_fog_density : float = 0.24
 
 var pixelate_shader_material : ShaderMaterial
 var antialiasing_enabled     : bool = false
@@ -91,8 +93,13 @@ var _hud_scene_instance : Node = null
 
 var _world_exporter : Node = null
 
+var _options_ui : CanvasLayer = null
+
 # Debug toggle state (runtime)
 var _debug_enabled : bool = DEBUG_ENABLED_BY_DEFAULT
+
+var _bodycam_rect : ColorRect = null
+var _bodycam_material : ShaderMaterial = null
 
 # ─────────────────────────────────────────────────────────────
 # PULSE VISION STATE
@@ -147,9 +154,8 @@ var _ominous_timer    : float = 0.0
 # PAUSE MENU STATE
 # ─────────────────────────────────────────────────────────────
 
-var _paused              : bool        = false
-var _pause_canvas        : CanvasLayer = null
-var _debug_info_label    : Label       = null
+var _paused              : bool = false
+var _pause_menu_instance : CanvasLayer = null
 
 # ─────────────────────────────────────────────────────────────
 # CACHED REFERENCES (Performance Optimization)
@@ -183,11 +189,23 @@ func _ready() -> void:
 	_setup_lives_hud()
 	_setup_star_manager()
 	_hud_scene_instance = $HUD
-	_setup_world_exporter()
 	_setup_audio()
 	_connect_audio_settings()
 	_verify_menu_cleanup()
 	_setup_ground_collision()
+	_setup_bodycam_shader()
+	
+	# At the end of _ready(), after _setup_bodycam_shader():
+	if SettingsManager:
+		var bodycam_on = SettingsManager.get_setting("bodycam_enabled", false)
+		var bodycam_str = SettingsManager.get_setting("bodycam_strength", 0.35)
+		set_bodycam_enabled(bodycam_on)
+		set_bodycam_strength(bodycam_str)
+		
+		_map_visible = false
+		if _cached_map_container:
+			_cached_map_container.visible = false
+			_cached_map_container.modulate.a = 0.0
 	
 	if player and "eye_height" in player:
 		_bob_base_y = player.eye_height
@@ -213,6 +231,11 @@ func _process(delta: float) -> void:
 	_check_enemy_catch()
 	_update_camera_bob(delta)
 	_update_ambient_audio(delta)
+	_update_bodycam_shader(delta)
+	
+	if _bodycam_material and _bodycam_rect and _bodycam_rect.visible:
+		var current_time = Time.get_ticks_msec() / 1000.0
+		_bodycam_material.set_shader_parameter("time", current_time)
 
 func _input(event: InputEvent) -> void:
 	if _jumpscare_active:
@@ -234,6 +257,138 @@ func _input(event: InputEvent) -> void:
 	_handle_map_input(event)
 	_handle_hud_toggle_input(event)
 	_handle_debug_toggle_input(event)
+
+# ─────────────────────────────────────────────────────────────
+# PAUSE MENU SYSTEM
+# ─────────────────────────────────────────────────────────────
+
+func _toggle_pause() -> void:
+	if _game_over or _jumpscare_active:
+		return
+	
+	_paused = not _paused
+	
+	if _paused:
+		print("[Main] Showing pause menu...")
+		_show_pause_menu()
+		get_tree().paused = true
+	else:
+		print("[Main] Hiding pause menu...")
+		await _hide_pause_menu()
+		get_tree().paused = false
+
+func _show_pause_menu() -> void:
+	if _pause_menu_instance and is_instance_valid(_pause_menu_instance):
+		_pause_menu_instance.visible = true
+		if _pause_menu_instance.has_method("show_pause"):
+			_pause_menu_instance.show_pause()
+		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
+		return
+	
+	print("[Main] Loading pause menu scene: ", PAUSE_MENU_SCENE)
+	
+	var pause_scene = load(PAUSE_MENU_SCENE)
+	if not pause_scene:
+		push_error("[Main] Could not load pause menu scene: ", PAUSE_MENU_SCENE)
+		_paused = false
+		return
+	
+	_pause_menu_instance = pause_scene.instantiate()
+	
+	_pause_menu_instance.process_mode = Node.PROCESS_MODE_ALWAYS
+	_pause_menu_instance.layer = 5
+	
+	add_child(_pause_menu_instance)
+	print("[Main] Pause menu instantiated and added as child")
+	
+	if _pause_menu_instance.has_signal("resume_pressed"):
+		if not _pause_menu_instance.resume_pressed.is_connected(_on_pause_resume):
+			_pause_menu_instance.resume_pressed.connect(_on_pause_resume)
+			print("[Main] Connected resume_pressed signal")
+	
+	if _pause_menu_instance.has_signal("options_pressed"):
+		if not _pause_menu_instance.options_pressed.is_connected(_on_pause_options):
+			_pause_menu_instance.options_pressed.connect(_on_pause_options)
+			print("[Main] Connected options_pressed signal")
+	
+	if _pause_menu_instance.has_signal("reset_pressed"):
+		if not _pause_menu_instance.reset_pressed.is_connected(_on_pause_reset):
+			_pause_menu_instance.reset_pressed.connect(_on_pause_reset)
+			print("[Main] Connected reset_pressed signal")
+	
+	if _pause_menu_instance.has_signal("quit_pressed"):
+		if not _pause_menu_instance.quit_pressed.is_connected(_on_pause_quit):
+			_pause_menu_instance.quit_pressed.connect(_on_pause_quit)
+			print("[Main] Connected quit_pressed signal")
+	
+	if _pause_menu_instance.has_method("show_pause"):
+		_pause_menu_instance.show_pause()
+	else:
+		_pause_menu_instance.visible = true
+	
+	Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
+	print("[Main] Pause menu shown, mouse mode set to visible")
+
+func _hide_pause_menu() -> void:
+	if _pause_menu_instance and is_instance_valid(_pause_menu_instance):
+		if _pause_menu_instance.has_method("hide_pause"):
+			await _pause_menu_instance.hide_pause()
+		_pause_menu_instance.queue_free()
+		_pause_menu_instance = null
+		print("[Main] Pause menu removed")
+	
+	Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
+
+func _on_pause_resume() -> void:
+	print("[Main] Resume button pressed")
+	_toggle_pause()
+
+func _on_pause_options() -> void:
+	print("[Main] Options button pressed")
+	if _pause_menu_instance and is_instance_valid(_pause_menu_instance):
+		_pause_menu_instance.visible = false
+	_show_pause_options()
+
+func _on_pause_reset() -> void:
+	print("[Main] Reset button pressed")
+	_reset_game()
+
+func _on_pause_quit() -> void:
+	print("[Main] Quit button pressed")
+	_quit_to_splash()
+
+func _reset_game() -> void:
+	"""Reset the current game world"""
+	get_tree().paused = false
+	get_tree().reload_current_scene()
+
+func _quit_to_splash() -> void:
+	"""Quit to splash screen"""
+	get_tree().paused = false
+	get_tree().change_scene_to_file("res://UI/SplashScreen.tscn")
+
+func _show_pause_options() -> void:
+	if not _options_ui or not is_instance_valid(_options_ui):
+		var options_scene = load("res://UI/OptionsUI.tscn")
+		if not options_scene:
+			push_error("[Main] Could not load res://UI/OptionsUI.tscn")
+			return
+		_options_ui = options_scene.instantiate()
+		_options_ui.layer = 10
+		_options_ui.process_mode = Node.PROCESS_MODE_ALWAYS
+		add_child(_options_ui)
+		_options_ui.back_pressed.connect(_on_options_back)
+		if _options_ui.has_signal("settings_changed"):
+			_options_ui.settings_changed.connect(_on_options_settings_changed)
+	
+	_options_ui.show_options()
+
+func _on_options_back() -> void:
+	if _pause_menu_instance and is_instance_valid(_pause_menu_instance):
+		_pause_menu_instance.visible = true
+
+func _on_options_settings_changed() -> void:
+	_connect_audio_settings()
 
 # ─────────────────────────────────────────────────────────────
 # INITIALIZATION & SETUP METHODS
@@ -302,7 +457,9 @@ func _setup_entity_manager() -> void:
 func _setup_entity_manager_targets() -> void:
 	if _entity_manager and chunk_manager and player:
 		_entity_manager.set_targets(chunk_manager, player)
-		if _entity_manager.has_signal("jumpscare_finished"):
+		# FIX: guard against duplicate connection on scene reload / re-entry
+		if _entity_manager.has_signal("jumpscare_finished") \
+				and not _entity_manager.jumpscare_finished.is_connected(_on_jumpscare_finished):
 			_entity_manager.jumpscare_finished.connect(_on_jumpscare_finished)
 
 func _setup_enemy_path_visualizer() -> void:
@@ -343,16 +500,6 @@ func _setup_lives_hud() -> void:
 		if player.has_signal("lives_depleted"):
 			player.lives_depleted.connect(_on_lives_depleted)
 
-func _setup_world_exporter() -> void:
-	var script = load("res://WorldExporter.gd")
-	if not script:
-		push_error("[Main] Could not load WorldExporter.gd")
-		return
-	_world_exporter = Node.new()
-	_world_exporter.name = "WorldExporter"
-	_world_exporter.set_script(script)
-	add_child(_world_exporter)
-
 func _setup_star_manager() -> void:
 	_star_manager = StarManager.new()
 	_star_manager.name = "StarManager"
@@ -375,6 +522,61 @@ func _apply_hud_visibility_to_star_counter() -> void:
 	var star_counter = _get_star_counter()
 	if star_counter and not _hud_visible:
 		star_counter.visible = false
+
+func _setup_bodycam_shader() -> void:
+	# Create BackBufferCopy to capture the 3D viewport
+	# It automatically covers the entire viewport - no sizing needed
+	var bbc := BackBufferCopy.new()
+	bbc.name = "BodycamBBC"
+	bbc.copy_mode = BackBufferCopy.COPY_MODE_VIEWPORT
+	$HUD.add_child(bbc)
+	$HUD.move_child(bbc, 0)
+	
+	# Create ColorRect for the bodycam effect
+	_bodycam_rect = ColorRect.new()
+	_bodycam_rect.name = "BodycamRect"
+	_bodycam_rect.anchor_right = 1.0
+	_bodycam_rect.anchor_bottom = 1.0
+	_bodycam_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	
+	# Load the shader
+	var shader = load("res://Shaders/bodycam.gdshader")
+	if not shader:
+		push_error("[Main] bodycam.gdshader not found")
+		return
+	
+	# Create and configure shader material
+	_bodycam_material = ShaderMaterial.new()
+	_bodycam_material.shader = shader
+	# Disabled by default — Options UI will enable it
+	_bodycam_material.set_shader_parameter("enabled", false)
+	_bodycam_material.set_shader_parameter("fisheye_strength", 0.35)
+	_bodycam_material.set_shader_parameter("vignette_strength", 0.45)
+	_bodycam_material.set_shader_parameter("aberration_strength", 0.004)
+	_bodycam_material.set_shader_parameter("grain_strength", 0.06)
+	_bodycam_rect.material = _bodycam_material
+	
+	# Add ColorRect as child of BackBufferCopy (so it samples the captured screen)
+	bbc.add_child(_bodycam_rect)
+	
+	print("[Main] Bodycam shader with BackBufferCopy setup complete")
+
+func _on_viewport_size_changed(bbc: BackBufferCopy) -> void:
+	"""Update BackBufferCopy size when viewport changes"""
+	if bbc and is_instance_valid(bbc):
+		bbc.set_size(get_viewport().get_visible_rect().size)
+	
+func _update_bodycam_shader(delta: float) -> void:
+	if _bodycam_material:
+		_bodycam_material.set_shader_parameter("time", Time.get_ticks_msec() / 1000.0)
+
+func set_bodycam_enabled(enabled: bool) -> void:
+	if _bodycam_material:
+		_bodycam_material.set_shader_parameter("enabled", enabled)
+
+func set_bodycam_strength(strength: float) -> void:
+	if _bodycam_material:
+		_bodycam_material.set_shader_parameter("fisheye_strength", strength)
 
 # ─────────────────────────────────────────────────────────────
 # AUDIO SETUP
@@ -502,8 +704,8 @@ func _update_camera_bob(delta: float) -> void:
 		return
 	if not player.is_on_floor():
 		player_camera.position.y = lerp(player_camera.position.y, _bob_base_y, BOB_RETURN_SPEED * delta)
+		player_camera.position.x = lerp(player_camera.position.x, 0.0, BOB_RETURN_SPEED * delta)
 		player_camera.rotation_degrees.z = lerp(player_camera.rotation_degrees.z, 0.0, BOB_RETURN_SPEED * delta)
-		player_camera.rotation_degrees.x = lerp(player_camera.rotation_degrees.x, 0.0, BOB_RETURN_SPEED * delta)
 		return
 
 	var vel    : Vector3 = player.velocity
@@ -766,11 +968,19 @@ func _flash_damage_vignette() -> void:
 # ─────────────────────────────────────────────────────────────
 
 func _check_enemy_catch() -> void:
-	if not _entity_manager or not _entity_manager.is_entity_alive():
+	if not _entity_manager or not _entity_manager.has_method("is_entity_alive"):
 		return
-	if not player:
+	if not player or _jumpscare_active or _game_over:
 		return
-	var dist := _entity_manager.get_entity_position().distance_to(player.global_position)
+	# FIX: check is_entity_alive AFTER the early-out guards so a despawn that
+	# happens in the same frame as a catch doesn't leave _entity_pos stale and
+	# trigger a ghost catch.
+	if not _entity_manager.is_entity_alive():
+		return
+
+	var enemy_pos : Vector3 = _entity_manager.get_entity_position()
+	var dist      : float   = enemy_pos.distance_to(player.global_position)
+
 	if dist <= ENEMY_CATCH_RADIUS:
 		_on_enemy_caught()
 
@@ -779,20 +989,15 @@ func _on_enemy_caught() -> void:
 		return
 	_jumpscare_active = true
 
-	print("[Main] Player caught — triggering jumpscare.")
-
-	if player and player.has_method("disable_controls"):
-		player.disable_controls()
-
-	if player and player.has_method("lose_all_lives"):
-		player.lose_all_lives()
-
-	if _entity_manager and _entity_manager.has_method("trigger_jumpscare"):
+	# trigger_jumpscare handles disable_controls + lock_camera internally
+	if _entity_manager:
 		_entity_manager.trigger_jumpscare()
-	else:
-		_on_jumpscare_finished()
 
 func _on_jumpscare_finished() -> void:
+	# FIX: guard re-entrancy — signal can fire twice if EntityManager
+	# emits it while the game-over path is already running
+	if _game_over:
+		return
 	_jumpscare_active = false
 	_trigger_game_over()
 
@@ -823,208 +1028,6 @@ func _on_tile_revealed_mine_check(cp: Vector2i, lx: int, lz: int, is_mine: bool)
 	add_child(explosion_audio)
 	explosion_audio.finished.connect(func(): explosion_audio.queue_free())
 	explosion_audio.play()
-
-# ─────────────────────────────────────────────────────────────
-# PAUSE MENU
-# ─────────────────────────────────────────────────────────────
-
-func _toggle_pause() -> void:
-	if _game_over or _jumpscare_active:
-		return
-	_paused = not _paused
-	if _paused:
-		_show_pause_menu()
-		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
-		get_tree().paused = true
-	else:
-		_close_pause_menu()
-		get_tree().paused = false
-		Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
-
-func _show_pause_menu() -> void:
-	if _pause_canvas and is_instance_valid(_pause_canvas):
-		return
-
-	_pause_canvas = CanvasLayer.new()
-	_pause_canvas.process_mode = Node.PROCESS_MODE_ALWAYS
-	add_child(_pause_canvas)
-
-	var overlay := ColorRect.new()
-	overlay.color         = Color(0.0, 0.0, 0.0, 0.72)
-	overlay.anchor_right  = 1.0
-	overlay.anchor_bottom = 1.0
-	overlay.mouse_filter  = Control.MOUSE_FILTER_STOP
-	_pause_canvas.add_child(overlay)
-
-	var center := CenterContainer.new()
-	center.anchor_right  = 1.0
-	center.anchor_bottom = 1.0
-	_pause_canvas.add_child(center)
-
-	var vbox := VBoxContainer.new()
-	vbox.alignment = BoxContainer.ALIGNMENT_CENTER
-	vbox.add_theme_constant_override("separation", 16)
-	center.add_child(vbox)
-
-	var title := Label.new()
-	title.text = "PAUSED"
-	title.add_theme_font_size_override("font_size", 56)
-	title.add_theme_color_override("font_color", Color(0.9, 0.9, 1.0))
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	vbox.add_child(title)
-
-	var spacer := Control.new()
-	spacer.custom_minimum_size = Vector2(0, 12)
-	vbox.add_child(spacer)
-
-	var resume_btn := _make_menu_button("Resume", Color(0.25, 0.45, 0.28))
-	vbox.add_child(resume_btn)
-	resume_btn.pressed.connect(_toggle_pause)
-
-	var options_btn := _make_menu_button("Options", Color(0.28, 0.35, 0.5))
-	vbox.add_child(options_btn)
-	options_btn.pressed.connect(_show_pause_options)
-
-	var reset_btn := _make_menu_button("Reset World", Color(0.5, 0.38, 0.18))
-	vbox.add_child(reset_btn)
-	reset_btn.pressed.connect(_confirm_reset)
-
-	var menu_btn := _make_menu_button("Quit to Main Menu", Color(0.3, 0.35, 0.45))
-	vbox.add_child(menu_btn)
-	menu_btn.pressed.connect(_confirm_quit_to_menu)
-
-	if _debug_enabled:
-		var debug_panel := _build_debug_keys_panel()
-		vbox.add_child(debug_panel)
-
-func _close_pause_menu() -> void:
-	if _pause_canvas and is_instance_valid(_pause_canvas):
-		_pause_canvas.queue_free()
-		_pause_canvas = null
-
-func _show_pause_options() -> void:
-	print("[Main] Options panel (pause) not yet implemented.")
-
-func _confirm_reset() -> void:
-	_show_confirmation("Reset the world?", func():
-		get_tree().paused = false
-		get_tree().reload_current_scene()
-	)
-
-func _confirm_quit_to_menu() -> void:
-	_show_confirmation("Return to Main Menu?", func():
-		get_tree().paused = false
-		get_tree().change_scene_to_file("res://UI/MainMenu.tscn")
-	)
-
-func _show_confirmation(message: String, on_confirm: Callable) -> void:
-	var confirm_canvas := CanvasLayer.new()
-	confirm_canvas.layer = 10
-	confirm_canvas.process_mode = Node.PROCESS_MODE_ALWAYS
-	add_child(confirm_canvas)
-
-	var bg := ColorRect.new()
-	bg.color         = Color(0.0, 0.0, 0.0, 0.85)
-	bg.anchor_right  = 1.0
-	bg.anchor_bottom = 1.0
-	bg.mouse_filter  = Control.MOUSE_FILTER_STOP
-	confirm_canvas.add_child(bg)
-
-	var cc := CenterContainer.new()
-	cc.anchor_right  = 1.0
-	cc.anchor_bottom = 1.0
-	confirm_canvas.add_child(cc)
-
-	var panel := PanelContainer.new()
-	var style := StyleBoxFlat.new()
-	style.bg_color = Color(0.12, 0.12, 0.16, 1.0)
-	style.set_corner_radius_all(8)
-	style.set_border_width_all(2)
-	style.border_color = Color(0.4, 0.4, 0.5)
-	style.content_margin_left   = 28.0
-	style.content_margin_right  = 28.0
-	style.content_margin_top    = 22.0
-	style.content_margin_bottom = 22.0
-	panel.add_theme_stylebox_override("panel", style)
-	cc.add_child(panel)
-
-	var vb := VBoxContainer.new()
-	vb.alignment = BoxContainer.ALIGNMENT_CENTER
-	vb.add_theme_constant_override("separation", 18)
-	panel.add_child(vb)
-
-	var lbl := Label.new()
-	lbl.text = message
-	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	lbl.add_theme_font_size_override("font_size", 20)
-	lbl.add_theme_color_override("font_color", Color(0.85, 0.85, 0.9))
-	vb.add_child(lbl)
-
-	var hb := HBoxContainer.new()
-	hb.alignment = BoxContainer.ALIGNMENT_CENTER
-	hb.add_theme_constant_override("separation", 20)
-	vb.add_child(hb)
-
-	var yes := _make_menu_button("Confirm", Color(0.65, 0.18, 0.18))
-	yes.custom_minimum_size = Vector2(130, 44)
-	hb.add_child(yes)
-	yes.pressed.connect(func():
-		confirm_canvas.queue_free()
-		on_confirm.call()
-	)
-
-	var no := _make_menu_button("Cancel", Color(0.28, 0.35, 0.45))
-	no.custom_minimum_size = Vector2(130, 44)
-	hb.add_child(no)
-	no.pressed.connect(func(): confirm_canvas.queue_free())
-
-func _build_debug_keys_panel() -> Control:
-	var panel := PanelContainer.new()
-	var style := StyleBoxFlat.new()
-	style.bg_color = Color(0.08, 0.1, 0.12, 0.85)
-	style.set_corner_radius_all(6)
-	style.set_border_width_all(1)
-	style.border_color = Color(0.3, 0.5, 0.3, 0.8)
-	style.content_margin_left   = 14.0
-	style.content_margin_right  = 14.0
-	style.content_margin_top    = 10.0
-	style.content_margin_bottom = 10.0
-	panel.add_theme_stylebox_override("panel", style)
-	panel.custom_minimum_size = Vector2(420, 0)
-
-	var vb := VBoxContainer.new()
-	vb.add_theme_constant_override("separation", 4)
-	panel.add_child(vb)
-
-	var header := Label.new()
-	header.text = "DEBUG BINDS (Ctrl+Shift+` to toggle)"
-	header.add_theme_font_size_override("font_size", 13)
-	header.add_theme_color_override("font_color", Color(0.4, 0.9, 0.4))
-	vb.add_child(header)
-
-	var binds : Array[Array] = [
-		["F3",           "Tile debug visualizer"],
-		["F4",           "Enemy debug panel"],
-		["F5",           "Spawn enemy now"],
-		["F6",           "Despawn enemy"],
-		["F7",           "Toggle spawn cycle pause"],
-		["F8",           "Reset spawn cycle"],
-		["F9",           "Spawn passive enemy"],
-		["F10",          "Toggle enemy path"],
-		["F11",          "Toggle player immunity"],
-		["U",            "Toggle immortality (no mine damage)"],
-		["Ctrl+Shift+`", "Lock / unlock all debug binds"],
-		["Shift+F5",     "Skip 3-minute spawner lock"],
-	]
-
-	for pair in binds:
-		var row := Label.new()
-		row.text = "  %-16s — %s" % [pair[0], pair[1]]
-		row.add_theme_font_size_override("font_size", 12)
-		row.add_theme_color_override("font_color", Color(0.72, 0.72, 0.78))
-		vb.add_child(row)
-
-	return panel
 
 # ─────────────────────────────────────────────────────────────
 # GAME OVER / WIN SCREENS
@@ -1126,7 +1129,7 @@ func _on_try_again_pressed() -> void:
 
 func _on_main_menu_pressed() -> void:
 	get_tree().paused = false
-	get_tree().change_scene_to_file("res://UI/MainMenu.tscn")
+	get_tree().change_scene_to_file("res://UI/SplashScreen.tscn")
 
 # ─────────────────────────────────────────────────────────────
 # STAR HANDLERS
@@ -1179,22 +1182,15 @@ func _show_win_screen() -> void:
 	if player:
 		player.disable_controls()
 	Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
-	var canvas := CanvasLayer.new()
-	add_child(canvas)
-	var panel := ColorRect.new()
-	panel.color         = Color(0, 0, 0, 0.75)
-	panel.anchor_right  = 1.0
-	panel.anchor_bottom = 1.0
-	canvas.add_child(panel)
-	var label := Label.new()
-	label.text = "✦  YOU COLLECTED ALL STARS  ✦"
-	label.add_theme_font_size_override("font_size", 52)
-	label.add_theme_color_override("font_color", Color(1.0, 0.85, 0.2))
-	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	label.vertical_alignment   = VERTICAL_ALIGNMENT_CENTER
-	label.anchor_right  = 1.0
-	label.anchor_bottom = 1.0
-	canvas.add_child(label)
+	
+	# Load and instantiate the win screen scene
+	var win_screen_scene = load("res://UI/WinScreen.tscn")
+	if not win_screen_scene:
+		push_error("[Main] Could not load win screen scene: res://UI/WinScreen.tscn")
+		return
+	
+	var win_screen = win_screen_scene.instantiate()
+	add_child(win_screen)
 
 # ─────────────────────────────────────────────────────────────
 # PULSE VISION SYSTEM
@@ -1218,6 +1214,11 @@ func _activate_pulse_vision() -> void:
 		_set_entity_pulse_outline(true)
 	_set_star_pulse_highlight(true)
 
+func _set_star_pulse_highlight(enabled: bool) -> void:
+	if not _star_manager:
+		return
+	_star_manager.set_star_pulse_highlight(enabled)
+
 func _deactivate_pulse_vision() -> void:
 	_pulse_active         = false
 	_pulse_cooldown_timer = PULSE_VISION_COOLDOWN
@@ -1235,7 +1236,7 @@ func _update_pulse_vision_timers(delta: float) -> void:
 			_deactivate_pulse_vision()
 			return
 		if _entity_manager and _entity_manager.is_entity_alive():
-			var entity_node := _entity_manager.get_entity_node()
+			var entity_node: Node3D = _entity_manager.get_entity_node()
 			if is_instance_valid(entity_node):
 				_ensure_pulse_applied(entity_node)
 	elif _pulse_cooldown_timer > 0.0:
@@ -1313,106 +1314,40 @@ func _apply_pulse_to_meshes(node: Node, enabled: bool, color: Color) -> void:
 		if child.get_child_count() > 0:
 			_apply_pulse_to_meshes(child, enabled, color)
 
-func _set_star_pulse_highlight(enabled: bool) -> void:
-	if not _star_manager:
-		return
-	if enabled:
-		for child in _star_manager.get_children():
-			if child.name.begins_with("Star_"):
-				_apply_star_pulse(child, true, Color(1.0, 0.9, 0.2))
-		for i in range(_star_manager._stars.size()):
-			var beacon_name := "StarBeacon_%d" % i
-			if _star_manager.has_node(beacon_name):
-				continue
-			var star = _star_manager._stars[i]
-			if star["revealed"] or star["collected"]:
-				continue
-			var tile : Vector2i = star["world_tile"]
-			var beacon := _build_star_beacon(i, tile)
-			_star_manager.add_child(beacon)
-	else:
-		for child in _star_manager.get_children():
-			if child.name.begins_with("StarBeacon_"):
-				child.queue_free()
-			elif child.name.begins_with("Star_"):
-				_apply_star_pulse(child, false, Color.WHITE)
-
-func _apply_star_pulse(node: Node, enabled: bool, pulse_color: Color) -> void:
-	for child in node.get_children():
-		if child is MeshInstance3D:
-			if enabled:
-				if not child.has_meta("_pulse_mat_backup"):
-					child.set_meta("_pulse_mat_backup", child.material_override)
-				var mat := StandardMaterial3D.new()
-				mat.shading_mode               = BaseMaterial3D.SHADING_MODE_UNSHADED
-				mat.albedo_color               = pulse_color
-				mat.emission_enabled           = true
-				mat.emission                   = pulse_color
-				mat.emission_energy_multiplier = 8.0
-				mat.no_depth_test              = true
-				mat.render_priority            = 10
-				mat.transparency               = BaseMaterial3D.TRANSPARENCY_ALPHA
-				child.material_override        = mat
-			else:
-				if child.has_meta("_pulse_mat_backup"):
-					child.material_override = child.get_meta("_pulse_mat_backup")
-					child.remove_meta("_pulse_mat_backup")
-		if child.get_child_count() > 0:
-			_apply_star_pulse(child, enabled, pulse_color)
-
-func _build_star_beacon(idx: int, tile: Vector2i) -> Node3D:
-	var root := Node3D.new()
-	root.name = "StarBeacon_%d" % idx
-	root.global_position = Vector3(tile.x + 0.5, 1.0, tile.y + 0.5)
-	var mi     := MeshInstance3D.new()
-	var sphere := SphereMesh.new()
-	sphere.radius = 0.2
-	sphere.height = 0.4
-	mi.mesh = sphere
-	var star_color := Color(1.0, 0.9, 0.2, 1.0)
-	var mat        := StandardMaterial3D.new()
-	mat.shading_mode               = BaseMaterial3D.SHADING_MODE_UNSHADED
-	mat.albedo_color               = star_color
-	mat.emission_enabled           = true
-	mat.emission                   = star_color
-	mat.emission_energy_multiplier = 5.0
-	mat.no_depth_test              = true
-	mat.render_priority            = 10
-	mat.transparency               = BaseMaterial3D.TRANSPARENCY_ALPHA
-	mi.material_override = mat
-	root.add_child(mi)
-	var light := OmniLight3D.new()
-	light.light_color  = star_color
-	light.light_energy = 3.0
-	light.omni_range   = 6.0
-	root.add_child(light)
-	return root
-
 # ─────────────────────────────────────────────────────────────
 # ENEMY PATH VISUALIZATION
 # ─────────────────────────────────────────────────────────────
 
 func _update_enemy_path_line() -> void:
-	if not _enemy_path_visible or not _entity_manager or not _entity_manager.is_entity_alive():
+	if not _enemy_path_visible or not _entity_manager or not _entity_manager.has_method("is_entity_alive"):
 		if _enemy_path_line and _enemy_path_line.visible:
 			_enemy_path_line.visible = false
 		return
+
+	if not _entity_manager.is_entity_alive():
+		_enemy_path_line.visible = false
+		return
+
 	var path : Array[Vector3] = _entity_manager.get_current_path()
 	if path.is_empty():
 		_enemy_path_line.visible = false
 		return
+
 	_enemy_path_line.visible = true
 	var immediate_mesh = _enemy_path_line.mesh as ImmediateMesh
 	if not immediate_mesh:
 		return
+
 	immediate_mesh.clear_surfaces()
-	var all_points : Array[Vector3] = [_entity_manager.get_entity_position()]
-	all_points.append_array(path)
-	if all_points.size() < 2:
-		return
+	
+	# Start line at the enemy's actual current position
+	var start_pos = _entity_manager.get_entity_position()
+	
 	immediate_mesh.surface_begin(Mesh.PRIMITIVE_LINE_STRIP)
-	for point in all_points:
-		immediate_mesh.surface_add_vertex(point)
+	immediate_mesh.surface_add_vertex(start_pos)
+	for point in path:
+		# Keep lines slightly above ground for visibility
+		immediate_mesh.surface_add_vertex(point + Vector3(0, 0.2, 0))
 	immediate_mesh.surface_end()
 
 func _toggle_enemy_path() -> void:
@@ -1455,12 +1390,17 @@ func _toggle_immortal() -> void:
 func _toggle_spawn_cycle() -> void:
 	if not _debug_enabled or not _entity_manager:
 		return
+	
 	_spawn_cycle_paused = not _spawn_cycle_paused
+	
 	if _spawn_cycle_paused:
-		_entity_manager.pause_spawn_cycle()
+		if _entity_manager.has_method("pause_spawn_cycle"):
+			_entity_manager.pause_spawn_cycle()
 	else:
-		_entity_manager.resume_spawn_cycle()
-	print("Spawn Cycle: ", "PAUSED" if _spawn_cycle_paused else "RESUMED")
+		if _entity_manager.has_method("resume_spawn_cycle"):
+			_entity_manager.resume_spawn_cycle()
+	
+	_show_debug_toast("Spawn Cycle: " + ("PAUSED" if _spawn_cycle_paused else "RESUMED"))
 
 func _reset_spawn_cycle() -> void:
 	if not _debug_enabled or not _entity_manager:
@@ -1484,11 +1424,13 @@ func _spawn_passive_enemy() -> void:
 		return
 	_entity_manager.spawn_passive()
 
-func _skip_spawn_lock() -> void:
-	if not _debug_enabled or not _entity_manager:
-		return
-	_entity_manager.skip_first_spawn_lock()
-	print("[Main] DEBUG: Spawn lock skipped.")
+func _skip_enemy_spawn_lock() -> void:
+	if _entity_manager and _entity_manager.has_method("skip_first_spawn_lock"):
+		_entity_manager.skip_first_spawn_lock()
+		_show_debug_toast("Spawn Lock Skipped")
+	else:
+		# If the new EntityManager doesn't have a lock, just report it
+		_show_debug_toast("No active spawn lock found")
 
 # ─────────────────────────────────────────────────────────────
 # SIGNAL HANDLERS
@@ -1547,19 +1489,32 @@ func _handle_debug_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and event.keycode == KEY_U:
 		_toggle_immortal()
 
-	if event is InputEventKey and event.pressed \
-			and event.keycode == KEY_F5 \
-			and event.shift_pressed \
-			and not event.ctrl_pressed:
-		_skip_spawn_lock()
+	if event is InputEventKey and event.pressed and event.keycode == KEY_F5:
+		_skip_enemy_spawn_lock()
+		print("[Main] DEBUG: Enemy 3-minute spawn lock skipped.")
+		_show_debug_toast("Enemy spawn lock bypassed")
 
-		print(
-			"[Main] Debug controls %s"
-			% ("ENABLED" if _debug_enabled else "DISABLED")
-		)
+func _show_debug_toast(message: String) -> void:
+	"""Show a temporary debug toast message"""
+	var lbl := Label.new()
+	lbl.text = "🔧 " + message
+	lbl.add_theme_font_size_override("font_size", 18)
+	lbl.add_theme_color_override("font_color", Color(0.3, 1.0, 0.3))
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lbl.anchor_left   = 0.0
+	lbl.anchor_right  = 1.0
+	lbl.anchor_top    = 0.12
+	lbl.anchor_bottom = 0.12
+	$HUD.add_child(lbl)
+	var tween := lbl.create_tween()
+	tween.tween_interval(1.5)
+	tween.tween_property(lbl, "modulate:a", 0.0, 0.5)
+	tween.tween_callback(lbl.queue_free)
 
 func _handle_console_input(event: InputEvent) -> void:
-	if event is InputEventKey and event.pressed and event.keycode == KEY_QUOTELEFT:
+	# Keep console on backtick/quote left, separate from debug toggle
+	if event is InputEventKey and event.pressed and event.keycode == KEY_QUOTELEFT \
+			and not event.ctrl_pressed and not event.shift_pressed:
 		var console = get_node_or_null("DeveloperConsole")
 		if console:
 			if console.is_open: console._close_console()
@@ -1574,8 +1529,9 @@ func _handle_hud_toggle_input(event: InputEvent) -> void:
 		_toggle_hud()
 
 func _handle_debug_toggle_input(event: InputEvent) -> void:
+	# Changed from QuoteLeft to Key 0 with Ctrl+Shift modifiers
 	if event is InputEventKey and event.pressed \
-			and event.keycode == KEY_QUOTELEFT \
+			and event.keycode == KEY_0 \
 			and event.ctrl_pressed \
 			and event.shift_pressed:
 		_debug_enabled = not _debug_enabled
@@ -1639,10 +1595,9 @@ func _setup_ground_collision() -> void:
 	
 	var collision_shape = CollisionShape3D.new()
 	var box_shape = BoxShape3D.new()
-	# Make it large enough to cover the playable area
 	box_shape.size = Vector3(1000, 0.1, 1000)
 	collision_shape.shape = box_shape
-	collision_shape.position = Vector3(0, -0.05, 0)  # Just below tile surface
+	collision_shape.position = Vector3(0, -0.05, 0)
 	
 	ground.add_child(collision_shape)
 	add_child(ground)
