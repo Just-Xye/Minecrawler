@@ -28,14 +28,18 @@ const RESPAWN_AFTER_DESPAWN : float = 5.0
 const WANDER_RETARGET_TIME  : float = 3.0
 const STEP_INTERVAL         : float = 0.12
 const LOS_MAX_DIST          : float = 18.0
-const ENTITY_HEIGHT         : float = 1.5
-const ROTATION_SPEED        : float = 5.0
+const ENTITY_HEIGHT         : float = 0.5
+const ROTATION_SPEED        : float = 8.0
 const MIN_PATH_DISTANCE     : float = 0.4
 const STUCK_THRESHOLD       : float = 0.6
 const STUCK_MOVE_MIN        : float = 0.08
 
-# First-spawn lock before sweeper can ever appear
-const FIRST_SPAWN_LOCK      : float = 180.0
+# Jumpscare constants
+const JUMPSCARE_FACE_OFFSET : float = 1.2
+const JUMPSCARE_CAM_HEIGHT  : float = 0.8
+
+# First-spawn lock
+const FIRST_SPAWN_LOCK      : float = 60.0
 
 # ─────────────────────────────────────────────────────────────
 # PATHFINDING TUNABLES
@@ -50,9 +54,7 @@ const REPATH_INTERVAL_CHASE      : float = 0.35
 const REPATH_INTERVAL_LAST_KNOWN : float = 0.55
 const REPATH_INTERVAL_HUNT       : float = 0.18
 
-# Target must move this many tiles before forcing an early repath
 const REPATH_TARGET_DRIFT        : float = 2.5
-
 const MAX_STUCK_REPATHS          : int   = 8
 const FLOW_FALLBACK_ENABLED      : bool  = true
 
@@ -134,12 +136,17 @@ var _prev_player_pos   : Vector3 = Vector3.ZERO
 var _prev_player_basis : Basis   = Basis.IDENTITY
 
 var _current_rotation : float = 0.0
+var _movement_direction : Vector3 = Vector3.ZERO
+var _has_los : bool = false
 
 var _animation_player : AnimationPlayer = null
 var _current_anim     : String = ""
 
+# Jumpscare state
+var _jumpscare_rotation_forced : bool = false
+
 # ─────────────────────────────────────────────────────────────
-# WALKABILITY CACHE  (packed int key -> {v: bool, f: int})
+# WALKABILITY CACHE
 # ─────────────────────────────────────────────────────────────
 
 var _walkable_cache : Dictionary = {}
@@ -196,7 +203,7 @@ func _process(delta: float) -> void:
 			if _is_player_active():
 				if not _first_input_received:
 					_first_input_received = true
-					print("[EntityManager] First player input — 3-minute spawn lock started.")
+					print("[EntityManager] First player input — spawn lock started.")
 				_begin_spawn_delay()
 
 		State.SPAWN_DELAY:
@@ -212,7 +219,7 @@ func _process(delta: float) -> void:
 		State.ALIVE:
 			_update_alive(delta)
 			if player and is_instance_valid(_entity_node):
-				_rotate_towards_player(delta)
+				_update_entity_rotation(delta)
 				_update_animation()
 			_update_sound(delta)
 
@@ -226,6 +233,29 @@ func _process(delta: float) -> void:
 			if _respawn_timer <= 0.0:
 				_state = State.WAITING_FOR_ACTIVE
 				_skip_active_wait = true
+
+# ═══════════════════════════════════════════════════════════════
+#  ENTITY ROTATION
+# ═══════════════════════════════════════════════════════════════
+
+func _update_entity_rotation(delta: float) -> void:
+	if not _entity_node:
+		return
+	
+	var target_angle: float
+	
+	if _has_los or _is_hunting:
+		var direction := (player.global_position - _entity_pos).normalized()
+		target_angle = atan2(direction.x, direction.z)
+	else:
+		if _movement_direction.length() > 0.1 and not _path.is_empty():
+			target_angle = atan2(_movement_direction.x, _movement_direction.z)
+		else:
+			target_angle = _current_rotation
+	
+	var rotation_speed = ROTATION_SPEED * (2.0 if _is_hunting else 1.0)
+	_current_rotation = lerp_angle(_current_rotation, target_angle, rotation_speed * delta)
+	_entity_node.rotation.y = _current_rotation
 
 # ═══════════════════════════════════════════════════════════════
 #  WALKABILITY CACHE
@@ -310,7 +340,6 @@ func _astar_path(from: Vector3, to: Vector3, max_nodes: int, randomize_ties: boo
 		if goal == start:
 			return []
 
-	# Open set: sorted Array of [f_cost, g_cost, Vector2i]
 	var open_set : Array    = []
 	var g_cost   : Dictionary = {}
 	var parent   : Dictionary = {}
@@ -365,8 +394,6 @@ func _astar_path(from: Vector3, to: Vector3, max_nodes: int, randomize_ties: boo
 
 	return _tiles_to_world(tiles, from.y)
 
-# ─── Min-heap via sorted-insert ───────────────────────────────
-
 func _pq_push(heap: Array, entry: Array) -> void:
 	var lo := 0; var hi := heap.size(); var f : float = entry[0]
 	while lo < hi:
@@ -377,8 +404,6 @@ func _pq_push(heap: Array, entry: Array) -> void:
 
 func _pq_pop(heap: Array) -> Array:
 	return heap.pop_front()
-
-# ─── Helpers ──────────────────────────────────────────────────
 
 func _nearest_walkable_to(target: Vector2i, reference: Vector2i, radius: int) -> Vector2i:
 	var best := reference; var best_d := INF
@@ -416,7 +441,7 @@ func _tiles_to_world(tiles: Array[Vector2i], y: float) -> Array[Vector3]:
 	return result
 
 # ═══════════════════════════════════════════════════════════════
-#  PATH SIMPLIFICATION  (Bresenham line-of-sight string-pull)
+#  PATH SIMPLIFICATION
 # ═══════════════════════════════════════════════════════════════
 
 func _simplify_path(path: Array[Vector3]) -> Array[Vector3]:
@@ -456,7 +481,6 @@ func _should_repath(target_tile: Vector2i) -> bool:
 	if _path.is_empty():     return true
 	if _last_path_target.distance_squared_to(target_tile) > int(REPATH_TARGET_DRIFT * REPATH_TARGET_DRIFT):
 		return true
-	# Staleness: next waypoint became non-walkable
 	if _current_target_index < _path.size():
 		var nxt := _path[_current_target_index]
 		if not _is_tile_walkable(floori(nxt.x), floori(nxt.z)):
@@ -482,7 +506,6 @@ func _do_repath(target_pos: Vector3, mode: MoveMode) -> void:
 	var new_path := _astar_path(_entity_pos, target_pos, max_nodes, rand_ties)
 	new_path = _simplify_path(new_path)
 
-	# Emergency shorter retry if A* failed
 	if new_path.is_empty() and mode != MoveMode.WANDER:
 		new_path = _astar_path(_entity_pos, target_pos, 150, false)
 
@@ -515,11 +538,9 @@ func _update_alive(delta: float) -> void:
 	_step_timer   -= delta
 
 	var player_tile_center : Vector3 = _get_tile_center(player.global_position if player else Vector3.ZERO)
-	var has_los : bool = _is_hunting or _check_line_of_sight(player_tile_center)
+	_has_los = _is_hunting or _check_line_of_sight(player_tile_center)
 
-	# ── Mode transitions ──────────────────────────────────────
-
-	if has_los:
+	if _has_los:
 		_last_known_player = player_tile_center
 		_despawn_timer     = DESPAWN_TIMEOUT
 
@@ -557,8 +578,6 @@ func _update_alive(delta: float) -> void:
 
 	_current_speed = lerpf(_current_speed, _target_speed, delta * 4.0)
 
-	# ── Stuck detection ───────────────────────────────────────
-
 	var movement := (_entity_pos - _last_position).length()
 	if movement < STUCK_MOVE_MIN and not _path.is_empty():
 		_stuck_timer += delta
@@ -579,20 +598,12 @@ func _update_alive(delta: float) -> void:
 			_stuck_repath_count = 0
 		_last_position = _entity_pos
 
-	# ── Pathfinding tick ──────────────────────────────────────
-
 	if _step_timer <= 0.0:
 		_step_timer = STEP_INTERVAL
 		_tick_pathfinding(player_tile_center)
 
-	# ── Movement ─────────────────────────────────────────────
-
 	_move_entity(delta)
 	_entity_node.global_position = _entity_pos
-
-# ─────────────────────────────────────────────────────────────
-# PATHFINDING TICK
-# ─────────────────────────────────────────────────────────────
 
 func _tick_pathfinding(player_pos: Vector3) -> void:
 	var target_pos : Vector3
@@ -600,10 +611,8 @@ func _tick_pathfinding(player_pos: Vector3) -> void:
 	match _move_mode:
 		MoveMode.HUNT, MoveMode.CHASE_LOS:
 			target_pos = player_pos
-
 		MoveMode.LAST_KNOWN:
 			target_pos = _last_known_player
-
 		MoveMode.WANDER:
 			_wander_timer -= STEP_INTERVAL
 			if _wander_timer <= 0.0 or _path.is_empty():
@@ -612,17 +621,13 @@ func _tick_pathfinding(player_pos: Vector3) -> void:
 				_repath_timer     = 0.0
 				_last_path_target = Vector2i(-9999, -9999)
 			else:
-				return  # still navigating to existing wander target
+				return
 		_:
 			return
 
 	var target_tile := Vector2i(floori(target_pos.x), floori(target_pos.z))
 	if _should_repath(target_tile):
 		_do_repath(target_pos, _move_mode)
-
-# ─────────────────────────────────────────────────────────────
-# WANDER TARGET
-# ─────────────────────────────────────────────────────────────
 
 func _pick_wander_target() -> Vector3:
 	if not chunk_manager:
@@ -636,16 +641,14 @@ func _pick_wander_target() -> Vector3:
 			return _get_tile_center(Vector3(tx, _entity_pos.y, tz))
 	return _entity_pos
 
-# ─────────────────────────────────────────────────────────────
-# MOVEMENT EXECUTION
-# ─────────────────────────────────────────────────────────────
-
 func _move_entity(delta: float) -> void:
 	if _path.is_empty():
+		_movement_direction = Vector3.ZERO
 		return
 	if _current_target_index >= _path.size():
 		_path.clear()
 		_current_target_index = 0
+		_movement_direction = Vector3.ZERO
 		return
 
 	var target : Vector3 = _path[_current_target_index]
@@ -653,11 +656,11 @@ func _move_entity(delta: float) -> void:
 	diff.y = 0.0
 	var dist : float = diff.length()
 
-	# Staleness: waypoint became non-walkable — force immediate repath
 	if not _is_tile_walkable(floori(target.x), floori(target.z)):
 		_path.clear()
 		_current_target_index = 0
 		_repath_timer = 0.0
+		_movement_direction = Vector3.ZERO
 		return
 
 	if dist < MIN_PATH_DISTANCE:
@@ -667,6 +670,8 @@ func _move_entity(delta: float) -> void:
 
 	var move_dist : float = _current_speed * delta
 	var move_dir          = diff.normalized()
+	
+	_movement_direction = move_dir
 
 	if move_dist >= dist:
 		_entity_pos           = target
@@ -680,10 +685,6 @@ func _move_entity(delta: float) -> void:
 		_entity_node.velocity   = move_dir * _current_speed
 		_entity_node.velocity.y = 0.0
 		_entity_node.move_and_slide()
-
-# ─────────────────────────────────────────────────────────────
-# LINE OF SIGHT
-# ─────────────────────────────────────────────────────────────
 
 func _check_line_of_sight(target: Vector3) -> bool:
 	if not chunk_manager or not player:
@@ -719,10 +720,6 @@ func _play_sight_sound() -> void:
 		_load_sight_sound()
 	_sight_sound_player.play()
 	print("[EntityManager] 👁️ Enemy spotted player!")
-
-# ─────────────────────────────────────────────────────────────
-# UTILITIES
-# ─────────────────────────────────────────────────────────────
 
 func _get_tile_center(pos: Vector3) -> Vector3:
 	return Vector3(floori(pos.x) + 0.5, pos.y, floori(pos.z) + 0.5)
@@ -782,6 +779,8 @@ func _try_spawn() -> void:
 	_last_position        = _entity_pos
 	_stuck_timer          = 0.0
 	_stuck_repath_count   = 0
+	_movement_direction   = Vector3.ZERO
+	_has_los              = false
 	_invalidate_cache()
 
 	_state = State.ALIVE
@@ -815,10 +814,6 @@ func _find_spawn_tile() -> Vector2i:
 	var pool : int = maxi(1, candidates.size() / 4)
 	return candidates[randi() % pool]
 
-# ─────────────────────────────────────────────────────────────
-# DESPAWN
-# ─────────────────────────────────────────────────────────────
-
 func _do_despawn() -> void:
 	print("[EntityManager] Entity despawning")
 	_stop_sound()
@@ -831,11 +826,8 @@ func _do_despawn() -> void:
 	_current_target_index = 0
 	_stuck_repath_count   = 0
 	_stuck_timer          = 0.0
+	_movement_direction   = Vector3.ZERO
 	_invalidate_cache()
-
-# ─────────────────────────────────────────────────────────────
-# HUNT MODE
-# ─────────────────────────────────────────────────────────────
 
 func force_hunt_player() -> void:
 	_is_hunting = true
@@ -886,18 +878,6 @@ func _setup_animation_fallback(entity: Node3D) -> void:
 	walk.track_set_path(tw, NodePath(":rotation:y"))
 	walk.track_insert_key(tw, 0.0, -0.15); walk.track_insert_key(tw, 0.25, 0.15); walk.track_insert_key(tw, 0.5, -0.15)
 	ap.add_animation("walk", walk)
-
-# ─────────────────────────────────────────────────────────────
-# ROTATION
-# ─────────────────────────────────────────────────────────────
-
-func _rotate_towards_player(delta: float) -> void:
-	if not player or not _entity_node: return
-	var dir  := (player.global_position - _entity_pos).normalized()
-	var ang  := atan2(dir.x, dir.z)
-	var spd  := ROTATION_SPEED * (2.0 if _is_hunting else 1.0)
-	_current_rotation = lerp_angle(_current_rotation, ang, spd * delta)
-	_entity_node.rotation.y = _current_rotation
 
 # ─────────────────────────────────────────────────────────────
 # SOUND
@@ -965,60 +945,217 @@ func _stop_sound() -> void:
 	if _sight_sound_player: _sight_sound_player.stop()
 	if _spawn_sound_player: _spawn_sound_player.stop()
 
-# ─────────────────────────────────────────────────────────────
-# JUMPSCARE
-# ─────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════
+#  JUMPSCARE SYSTEM (COMPLETELY REWRITTEN)
+# ═══════════════════════════════════════════════════════════════
 
 func trigger_jumpscare() -> void:
-	if _state == State.JUMPSCARE or _state == State.JUMPSCARE_DESPAWN: return
+	if _state == State.JUMPSCARE or _state == State.JUMPSCARE_DESPAWN:
+		return
+	
 	_state = State.JUMPSCARE
 	_stop_sound()
 	_despawn_timer = -999.0
-	if is_instance_valid(_entity_node): _entity_node.global_position = _entity_pos
-	if player and is_instance_valid(_entity_node): _face_player_toward_entity()
-
+	
+	if not is_instance_valid(_entity_node) or not player:
+		_on_jumpscare_finished()
+		return
+	
+	print("[EntityManager] JUMPSCARE STARTING")
+	
+	# Disable all player input
+	_disable_player_input()
+	
+	# Position and face the player
+	_jumpscare_position_player()
+	_jumpscare_force_face_each_other()
+	
+	# Play eat animation
+	_play_eat_animation()
+	
+	# Play jumpscare sound
 	_jumpscare_player = AudioStreamPlayer.new()
 	_jumpscare_player.name = "JumpscareSound"
 	_jumpscare_player.volume_db = JUMPSCARE_VOLUME_DB
-	var js = load("res://Sounds/Sweeper/jumpscare.wav")
-	if js: _jumpscare_player.stream = js
+	var js_stream = load("res://Sounds/Sweeper/jumpscare.wav")
+	if js_stream:
+		_jumpscare_player.stream = js_stream
 	add_child(_jumpscare_player)
+	
+	_jumpscare_player.finished.connect(_on_jumpscare_sound_finished, CONNECT_ONE_SHOT)
 	_jumpscare_player.play()
-	_jumpscare_player.finished.connect(_on_jumpscare_finished)
-	_jumpscare_timer = js.get_length() + 0.5 if js else 3.0
-	print("[EntityManager] Jumpscare triggered!")
+	
+	var sound_length = js_stream.get_length() if js_stream else 3.0
+	_jumpscare_timer = sound_length + 0.2
+	
+	print("[EntityManager] Jumpscare triggered! Sound length: ", sound_length)
 
-func _face_player_toward_entity() -> void:
-	if not player or not is_instance_valid(_entity_node): return
-	var dir := (_entity_pos - player.global_position); dir.y = 0.0
-	if dir.length_squared() < 0.001: return
-	if player.has_method("force_look_at"): player.force_look_at(_entity_pos); return
+func _disable_player_input() -> void:
+	if not player:
+		return
+	
+	if player.has_method("disable_controls"):
+		player.disable_controls()
+	if player.has_method("lock_camera"):
+		player.lock_camera(true)
+	
+	player.set_process_input(false)
+	player.set_process_unhandled_input(false)
+	player.set_physics_process(false)
+
+func _enable_player_input() -> void:
+	if not player:
+		return
+	
+	player.set_process_input(true)
+	player.set_process_unhandled_input(true)
+	player.set_physics_process(true)
+
+func _jumpscare_position_player() -> void:
+	if not player or not _entity_node:
+		return
+	
+	var enemy_pos := _entity_node.global_position
+	var enemy_transform := _entity_node.global_transform
+	var enemy_forward := -enemy_transform.basis.z
+	
+	if enemy_forward.length() < 0.1:
+		enemy_forward = Vector3.FORWARD
+	
+	enemy_forward.y = 0
+	enemy_forward = enemy_forward.normalized()
+	
+	# Position player in front of enemy
+	var player_offset := enemy_forward * JUMPSCARE_FACE_OFFSET
+	var player_pos := enemy_pos + player_offset
+	player_pos.y = enemy_pos.y - ENTITY_HEIGHT + 0.5
+	
+	# Adjust camera height
+	var cam := player.get_node_or_null("Camera3D") as Camera3D
+	if cam:
+		if not player.has_meta("original_eye_height"):
+			player.set_meta("original_eye_height", cam.position.y)
+		cam.position.y = JUMPSCARE_CAM_HEIGHT
+	
+	player.global_position = player_pos
+	print("[EntityManager] Player positioned at: ", player_pos)
+
+func _jumpscare_force_face_each_other() -> void:
+	if not player or not _entity_node:
+		print("[EntityManager] Cannot face - missing references")
+		return
+	
+	var enemy_pos := _entity_node.global_position
+	var player_pos := player.global_position
+	
+	# Calculate direction and angle
+	var dir_to_enemy := (enemy_pos - player_pos).normalized()
+	dir_to_enemy.y = 0
+	var target_yaw := atan2(dir_to_enemy.x, dir_to_enemy.z)
+	var target_yaw_deg := rad_to_deg(target_yaw)
+	
+	print("[EntityManager] Forcing player to face angle: ", target_yaw_deg)
+	
+	# Force player rotation multiple ways
+	player.rotation_degrees.y = target_yaw_deg
+	
 	if "_rotation_y" in player:
-		player._rotation_y = rad_to_deg(atan2(dir.x, dir.z))
-		player.rotation_degrees.y = player._rotation_y
-		if "_rotation_x" in player: player._rotation_x = 0.0
-		var cam : Camera3D = player.get_node_or_null("Camera3D")
-		if cam: cam.rotation_degrees.x = 0.0
+		player.set("_rotation_y", target_yaw_deg)
+	
+	var new_transform := player.global_transform
+	new_transform.basis = Basis(Vector3.UP, target_yaw)
+	player.global_transform = new_transform
+	
+	# Reset camera pitch
+	if "_rotation_x" in player:
+		player.set("_rotation_x", 0.0)
+	
+	var cam := player.get_node_or_null("Camera3D") as Camera3D
+	if cam:
+		cam.rotation_degrees.x = 0.0
+		cam.rotation_degrees.y = 0.0
+	
+	# Make enemy face player
+	var dir_to_player := (player_pos - enemy_pos).normalized()
+	dir_to_player.y = 0
+	var enemy_target_angle := atan2(dir_to_player.x, dir_to_player.z)
+	_entity_node.rotation.y = enemy_target_angle
+	_current_rotation = enemy_target_angle
+	
+	print("[EntityManager] Enemy facing angle: ", rad_to_deg(enemy_target_angle))
+	print("[EntityManager] Final player rotation: ", player.rotation_degrees.y)
+
+func _play_eat_animation() -> void:
+	if not _entity_node:
+		return
+	
+	var anim_player := _entity_node.find_child("AnimationPlayer", true, false) as AnimationPlayer
+	if not anim_player:
+		anim_player = _entity_node.get_node_or_null("AnimationPlayer") as AnimationPlayer
+	
+	if anim_player:
+		var eat_anim_names = ["eat", "Eat", "attack", "Attack", "bite", "Bite"]
+		for anim_name in eat_anim_names:
+			if anim_player.has_animation(anim_name):
+				anim_player.play(anim_name)
+				print("[EntityManager] Playing eat animation: ", anim_name)
+				return
+		
+		if anim_player.has_animation("idle"):
+			anim_player.play("idle", -1, 2.0)
+		elif anim_player.has_animation("walk"):
+			anim_player.play("walk", -1, 3.0)
+	else:
+		var tween := _entity_node.create_tween()
+		tween.set_ease(Tween.EASE_OUT)
+		tween.set_trans(Tween.TRANS_BACK)
+		tween.tween_property(_entity_node, "scale", Vector3(1.2, 0.8, 1.2), 0.15)
+		tween.tween_property(_entity_node, "scale", Vector3(1.0, 1.0, 1.0), 0.15)
+		tween.set_loops(3)
+
+func _on_jumpscare_sound_finished() -> void:
+	print("[EntityManager] Jumpscare sound finished - ending jumpscare")
+	_on_jumpscare_finished()
 
 func _tick_jumpscare(delta: float) -> void:
-	if is_instance_valid(_entity_node) and player:
-		var dir := (player.global_position - _entity_pos); dir.y = 0.0
-		if dir.length_squared() > 0.001:
-			_current_rotation = lerp_angle(_current_rotation, atan2(dir.x, dir.z), 20.0 * delta)
-			_entity_node.rotation.y = _current_rotation
 	_jumpscare_timer -= delta
-	if _jumpscare_timer <= 0.0: _on_jumpscare_finished()
+	if _jumpscare_timer <= 0.0 and _state == State.JUMPSCARE:
+		print("[EntityManager] Jumpscare timer fallback - ending jumpscare")
+		_on_jumpscare_finished()
 
 func _on_jumpscare_finished() -> void:
+	if _state != State.JUMPSCARE:
+		print("[EntityManager] Jumpscare already finished, ignoring")
+		return
+	
+	print("[EntityManager] JUMPSCARE FINISHING - Cleaning up")
+	
 	if is_instance_valid(_jumpscare_player):
-		if _jumpscare_player.finished.is_connected(_on_jumpscare_finished):
-			_jumpscare_player.finished.disconnect(_on_jumpscare_finished)
-		_jumpscare_player.queue_free(); _jumpscare_player = null
+		if _jumpscare_player.finished.is_connected(_on_jumpscare_sound_finished):
+			_jumpscare_player.finished.disconnect(_on_jumpscare_sound_finished)
+		_jumpscare_player.queue_free()
+		_jumpscare_player = null
+	
 	_jumpscare_timer = -999.0
+	
+	# Restore player camera height
+	if player and player.has_meta("original_eye_height"):
+		var cam := player.get_node_or_null("Camera3D") as Camera3D
+		if cam:
+			cam.position.y = player.get_meta("original_eye_height")
+		player.remove_meta("original_eye_height")
+	
+	_enable_player_input()
+	
 	_state = State.JUMPSCARE_DESPAWN
-	if is_instance_valid(_entity_node): _entity_node.queue_free(); _entity_node = null
+	
+	if is_instance_valid(_entity_node):
+		_entity_node.queue_free()
+		_entity_node = null
+	
+	print("[EntityManager] Emitting jumpscare_finished signal")
 	emit_signal("jumpscare_finished")
-	print("[EntityManager] Jumpscare finished.")
+	
 	_state = State.WAITING_FOR_ACTIVE
 	_skip_active_wait = true
 	_respawn_timer = 0.0
@@ -1134,4 +1271,5 @@ func force_reset_spawn_cycle() -> void:
 	_path.clear(); _current_target_index = 0; _last_path_target = Vector2i(-9999, -9999)
 	_prev_player_pos = Vector3.ZERO; _prev_player_basis = Basis.IDENTITY
 	_last_position = Vector3.ZERO; _stuck_timer = 0.0; _stuck_repath_count = 0
+	_movement_direction = Vector3.ZERO
 	_invalidate_cache()
